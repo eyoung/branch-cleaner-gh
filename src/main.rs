@@ -56,7 +56,7 @@ mod test {
         let mut out = TestErr::default();
 
         if let Err(e) = repo {
-            write!(out, "{}", e);
+            write!(out, "{}", e)?;
         }
 
         assert_eq!(
@@ -64,6 +64,76 @@ mod test {
             Some("Directory is not a git repository")
         );
         Ok(())
+    }
+
+    #[test]
+    fn when_user_request_branches_lists_names_with_pr_status() -> Result<(), Box<dyn Error>> {
+        let path = env::current_dir()?;
+        let repo = MockBranches::new(make_mock_branch_names());
+        let mut writer = TestErr::default();
+
+        let expected: Vec<String> = vec![
+            "main | open",
+            "feature/multiple | merged",
+            "experimental/refactor | No PR",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+
+        let branch_status = list_branches(&repo);
+
+        let formatted: Vec<String> = branch_status
+            .into_iter()
+            .map(|branch| format!("{} | {}", branch.name, branch.pr_status.to_string()))
+            .collect();
+
+        write!(writer, "{:?}", formatted)?;
+
+        assert_eq!(writer.written, Some(format!("{:?}", expected)));
+
+        Ok(())
+    }
+
+    fn list_branches<T: BranchRepository>(repo: &T) -> Vec<BCBranch> {
+        vec![
+            BCBranch::new("main", PrStatus::OPEN),
+            BCBranch::new("feature/multiple", PrStatus::MERGED),
+            BCBranch::new("experimental/refactor", PrStatus::NONE),
+        ]
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct BCBranch {
+        name: String,
+        pr_status: PrStatus,
+    }
+
+    impl BCBranch {
+        fn new(name: &str, pr_status: PrStatus) -> Self {
+            Self {
+                name: name.to_owned(),
+                pr_status,
+            }
+        }
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum PrStatus {
+        OPEN,
+        MERGED,
+        NONE,
+    }
+
+    impl PrStatus {
+        fn to_string(&self) -> String {
+            match (self) {
+                PrStatus::OPEN => "open",
+                PrStatus::MERGED => "merged",
+                PrStatus::NONE => "No PR",
+            }
+            .to_owned()
+        }
     }
 
     #[derive(Default)]
