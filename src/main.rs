@@ -20,6 +20,7 @@ mod test {
     use std::{
         default, env,
         error::Error,
+        fmt::{write, Display},
         io::{Read, Write},
         str::from_utf8,
     };
@@ -72,25 +73,15 @@ mod test {
         let repo = MockBranches::new(make_mock_branch_names());
         let mut writer = TestErr::default();
 
-        let expected: Vec<String> = vec![
-            "main | open",
-            "feature/multiple | merged",
-            "experimental/refactor | No PR",
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+        let expected = "main | open\nfeature/multiple | merged\nexperimental/refactor | No PR\n";
 
         let branch_status = list_branches(&repo);
 
-        let formatted: Vec<String> = branch_status
-            .into_iter()
-            .map(|branch| format!("{} | {}", branch.name, branch.pr_status.to_string()))
-            .collect();
+        branch_status.iter().for_each(|it| {
+            writeln!(writer, "{}", it);
+        });
 
-        write!(writer, "{:?}", formatted)?;
-
-        assert_eq!(writer.written, Some(format!("{:?}", expected)));
+        assert_eq!(writer.written, Some(expected.to_owned()));
 
         Ok(())
     }
@@ -133,6 +124,12 @@ mod test {
                 PrStatus::NONE => "No PR",
             }
             .to_owned()
+        }
+    }
+
+    impl Display for BCBranch {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{} | {}", self.name, self.pr_status.to_string())
         }
     }
 
