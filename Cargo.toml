@@ -6,5 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+crossterm = "0.28"
 git2 = "0.20.3"
 iocraft = "0.7.16"
+smol = "2.0"

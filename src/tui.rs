@@ -32,6 +32,10 @@ impl BranchViewModel {
         }
     }
 
+    pub fn state(&self) -> &ViewState {
+        &self.state
+    }
+
     pub fn branches(&self) -> &[BCBranch] {
         &self.state.branches
     }
@@ -42,6 +46,19 @@ impl BranchViewModel {
             .iter()
             .filter(|b| b.pr_status == PrStatus::MERGED)
             .collect()
+    }
+
+    pub fn move_down(&mut self) {
+        let max_index = self.state.branches.len().saturating_sub(1);
+        if self.state.selected_index < max_index {
+            self.state.selected_index += 1;
+        }
+    }
+
+    pub fn move_up(&mut self) {
+        if self.state.selected_index > 0 {
+            self.state.selected_index -= 1;
+        }
     }
 }
 
@@ -132,17 +149,50 @@ fn render_branch(branch: &BCBranch, is_selected: bool) -> impl Into<AnyElement<'
     }
 }
 
-/// Entry point to run the TUI application
-pub fn run_branch_tui() {
+#[component]
+fn BranchListView(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let branches = create_fake_branches();
-    let mut view_state = ViewState::new(branches);
+    let max_index = branches.len().saturating_sub(1);
+    let mut selected_index = hooks.use_state(|| 0);
 
-    // For now, highlight the second branch
-    view_state.selected_index = 1;
+    // Handle keyboard input
+    hooks.use_future(async move {
+        use crossterm::event::{poll, read, Event, KeyCode};
+        use std::time::Duration;
+
+        loop {
+            // Poll with a small timeout to avoid blocking the render loop
+            if poll(Duration::from_millis(50)).unwrap_or(false) {
+                if let Ok(event) = read() {
+                    match event {
+                        Event::Key(key_event) => match key_event.code {
+                            KeyCode::Up => {
+                                if selected_index > 0 {
+                                    selected_index -= 1;
+                                }
+                            }
+                            KeyCode::Down => {
+                                if selected_index < max_index {
+                                    selected_index += 1;
+                                }
+                            }
+                            KeyCode::Char('q') | KeyCode::Esc => {
+                                std::process::exit(0);
+                            }
+                            _ => {}
+                        },
+                        _ => {}
+                    }
+                }
+            }
+            // Small async sleep to yield to the executor
+            smol::Timer::after(Duration::from_millis(16)).await;
+        }
+    });
 
     let mut branch_elements = Vec::new();
-    for (idx, branch) in view_state.branches.iter().enumerate() {
-        branch_elements.push(render_branch(branch, idx == view_state.selected_index));
+    for (idx, branch) in branches.iter().enumerate() {
+        branch_elements.push(render_branch(branch, selected_index == idx));
     }
 
     element! {
@@ -168,7 +218,7 @@ pub fn run_branch_tui() {
                     flex_direction: FlexDirection::Column,
                 ) {
                     Text(
-                        content: "Navigation: ↑↓/jk arrows | Quit: q/Esc",
+                        content: "Navigation: ↑↓ arrows | Quit: q/Esc",
                         color: Color::Grey,
                     )
                     Text(
@@ -179,9 +229,21 @@ pub fn run_branch_tui() {
             }
         }
     }
-    .print();
+}
 
-    println!("\n(Interactive navigation will be added in the next iteration)");
+/// Entry point to run the TUI application
+pub fn run_branch_tui() {
+    use crossterm::terminal::{enable_raw_mode, disable_raw_mode};
+
+    // Enable raw mode to capture individual key presses
+    enable_raw_mode().unwrap();
+
+    let result = smol::block_on(element!(BranchListView).render_loop());
+
+    // Ensure raw mode is disabled on exit
+    disable_raw_mode().unwrap();
+
+    result.unwrap();
 }
 
 #[cfg(test)]
@@ -204,7 +266,12 @@ mod tests {
             let branches = create_test_branches();
             let vm = BranchViewModel::new(branches.clone());
 
-            assert_eq!(vm.branches(), &branches[..]);
+            let expected_state = ViewState {
+                branches: branches.clone(),
+                selected_index: 0,
+            };
+
+            assert_eq!(vm.state(), &expected_state);
         }
 
         #[test]
@@ -215,6 +282,38 @@ mod tests {
             let expected = vec![&branches[2]]; // feature-2 is the only merged branch
 
             assert_eq!(vm.safe_to_delete_branches(), expected);
+        }
+
+        #[test]
+        fn move_down_increments_selected_index() {
+            let branches = create_test_branches();
+            let mut vm = BranchViewModel::new(branches.clone());
+
+            vm.move_down();
+
+            let expected_state = ViewState {
+                branches: branches.clone(),
+                selected_index: 1,
+            };
+
+            assert_eq!(vm.state(), &expected_state);
+        }
+
+        #[test]
+        fn move_up_decrements_selected_index() {
+            let branches = create_test_branches();
+            let mut vm = BranchViewModel::new(branches.clone());
+
+            vm.move_down();
+            vm.move_down();
+            vm.move_up();
+
+            let expected_state = ViewState {
+                branches: branches.clone(),
+                selected_index: 1,
+            };
+
+            assert_eq!(vm.state(), &expected_state);
         }
     }
 }
