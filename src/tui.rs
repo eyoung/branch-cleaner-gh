@@ -2,6 +2,24 @@ use iocraft::prelude::*;
 
 use crate::{BCBranch, PrStatus};
 
+/// ViewState represents the pure data state of the TUI
+/// This is a simple data structure with no business logic
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewState {
+    pub branches: Vec<BCBranch>,
+    pub selected_index: usize,
+}
+
+impl ViewState {
+    /// Create a new ViewState with the given branches
+    pub fn new(branches: Vec<BCBranch>) -> Self {
+        Self {
+            branches,
+            selected_index: 0,
+        }
+    }
+}
+
 /// Maps PR status to display colors
 fn get_status_color(status: PrStatus) -> Color {
     match status {
@@ -89,11 +107,14 @@ fn render_branch(branch: &BCBranch, is_selected: bool) -> impl Into<AnyElement<'
 /// Entry point to run the TUI application
 pub fn run_branch_tui() {
     let branches = create_fake_branches();
-    let selected_index = 1; // For now, just highlight the second branch
+    let mut view_state = ViewState::new(branches);
+
+    // For now, highlight the second branch
+    view_state.selected_index = 1;
 
     let mut branch_elements = Vec::new();
-    for (idx, branch) in branches.iter().enumerate() {
-        branch_elements.push(render_branch(branch, idx == selected_index));
+    for (idx, branch) in view_state.branches.iter().enumerate() {
+        branch_elements.push(render_branch(branch, idx == view_state.selected_index));
     }
 
     element! {
