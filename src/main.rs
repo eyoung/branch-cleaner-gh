@@ -8,11 +8,11 @@ use std::{
 
 use git2::{Branches, Repository};
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let dir = env::current_dir()?;
-    let repo = GitRepository::new(&dir)?;
-    println!("{:?}", repo.list_branch_names());
-    Ok(())
+mod tui;
+
+fn main() {
+    // Run the TUI application
+    tui::run_branch_tui();
 }
 
 #[cfg(test)]
@@ -27,7 +27,7 @@ mod test {
 
     use git2::Repository;
 
-    use crate::{get_local_branches, BranchRepository, GitRepository};
+    use crate::{get_local_branches, BCBranch, BranchRepository, GitRepository, PrStatus};
 
     #[test]
     fn can_list_local_branches_in_repository() -> Result<(), Box<dyn Error>> {
@@ -86,51 +86,29 @@ mod test {
         Ok(())
     }
 
+    #[test]
+    fn given_branches_deletes_merged() {
+        let mut repo = MockBranches::new(make_mock_branch_names());
+        let mut branches = list_branches(&repo);
+
+        let expected = vec![
+            BCBranch::new("main", PrStatus::OPEN),
+            BCBranch::new("experimental/refactor", PrStatus::NONE),
+        ];
+
+        branches
+            .iter_mut()
+            .filter(|it| it.pr_status != PrStatus::MERGED);
+
+        assert_eq!(branches, expected);
+    }
+
     fn list_branches<T: BranchRepository>(repo: &T) -> Vec<BCBranch> {
         vec![
             BCBranch::new("main", PrStatus::OPEN),
             BCBranch::new("feature/multiple", PrStatus::MERGED),
             BCBranch::new("experimental/refactor", PrStatus::NONE),
         ]
-    }
-
-    #[derive(Debug, PartialEq)]
-    struct BCBranch {
-        name: String,
-        pr_status: PrStatus,
-    }
-
-    impl BCBranch {
-        fn new(name: &str, pr_status: PrStatus) -> Self {
-            Self {
-                name: name.to_owned(),
-                pr_status,
-            }
-        }
-    }
-
-    #[derive(Debug, PartialEq)]
-    enum PrStatus {
-        OPEN,
-        MERGED,
-        NONE,
-    }
-
-    impl PrStatus {
-        fn to_string(&self) -> String {
-            match (self) {
-                PrStatus::OPEN => "open",
-                PrStatus::MERGED => "merged",
-                PrStatus::NONE => "No PR",
-            }
-            .to_owned()
-        }
-    }
-
-    impl Display for BCBranch {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{} | {}", self.name, self.pr_status.to_string())
-        }
     }
 
     #[derive(Default)]
@@ -240,5 +218,58 @@ impl fmt::Display for BranchCleanerError {
                 write!(f, "Directory is not a git repository")
             }
         }
+    }
+}
+
+// Branch information structures
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum PrStatus {
+    OPEN,
+    MERGED,
+    NONE,
+}
+
+impl PrStatus {
+    pub fn to_string(&self) -> String {
+        match self {
+            PrStatus::OPEN => "open",
+            PrStatus::MERGED => "merged",
+            PrStatus::NONE => "No PR",
+        }
+        .to_owned()
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct BCBranch {
+    pub name: String,
+    pub pr_status: PrStatus,
+    pub pr_number: Option<u32>,
+    pub pr_title: Option<String>,
+}
+
+impl BCBranch {
+    pub fn new(name: &str, pr_status: PrStatus) -> Self {
+        Self {
+            name: name.to_owned(),
+            pr_status,
+            pr_number: None,
+            pr_title: None,
+        }
+    }
+
+    pub fn with_pr(name: &str, pr_status: PrStatus, pr_number: u32, pr_title: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            pr_status,
+            pr_number: Some(pr_number),
+            pr_title: Some(pr_title.to_owned()),
+        }
+    }
+}
+
+impl fmt::Display for BCBranch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} | {}", self.name, self.pr_status.to_string())
     }
 }
