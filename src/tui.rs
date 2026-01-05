@@ -20,12 +20,46 @@ impl ViewState {
     }
 }
 
+/// BranchViewModel manages the business logic for the branch viewer
+pub struct BranchViewModel {
+    state: ViewState,
+}
+
+impl BranchViewModel {
+    pub fn new(branches: Vec<BCBranch>) -> Self {
+        Self {
+            state: ViewState::new(branches),
+        }
+    }
+
+    pub fn branches(&self) -> &[BCBranch] {
+        &self.state.branches
+    }
+
+    pub fn safe_to_delete_branches(&self) -> Vec<&BCBranch> {
+        self.state
+            .branches
+            .iter()
+            .filter(|b| b.pr_status == PrStatus::MERGED)
+            .collect()
+    }
+}
+
 /// Maps PR status to display colors
 fn get_status_color(status: PrStatus) -> Color {
     match status {
         PrStatus::MERGED => Color::Green,  // Safe to delete
         PrStatus::OPEN => Color::Yellow,   // Caution
         PrStatus::NONE => Color::White,    // Default
+    }
+}
+
+/// Formats PR status for display in the TUI
+fn format_status_for_display(status: PrStatus) -> &'static str {
+    match status {
+        PrStatus::OPEN => "OPEN",
+        PrStatus::MERGED => "MERGED ✓",
+        PrStatus::NONE => "No PR",
     }
 }
 
@@ -91,13 +125,7 @@ fn render_branch(branch: &BCBranch, is_selected: bool) -> impl Into<AnyElement<'
             })
 
             Text(
-                content: format!("    └─ Status: {}",
-                    match branch.pr_status {
-                        PrStatus::OPEN => "OPEN",
-                        PrStatus::MERGED => "MERGED ✓",
-                        PrStatus::NONE => "No PR",
-                    }
-                ),
+                content: format!("    └─ Status: {}", format_status_for_display(branch.pr_status)),
                 color: get_status_color(branch.pr_status),
             )
         }
@@ -154,4 +182,39 @@ pub fn run_branch_tui() {
     .print();
 
     println!("\n(Interactive navigation will be added in the next iteration)");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_branches() -> Vec<BCBranch> {
+        vec![
+            BCBranch::new("main", PrStatus::NONE),
+            BCBranch::with_pr("feature-1", PrStatus::OPEN, 1, "Feature 1"),
+            BCBranch::with_pr("feature-2", PrStatus::MERGED, 2, "Feature 2"),
+        ]
+    }
+
+    mod view_model {
+        use super::*;
+
+        #[test]
+        fn can_create_view_model_with_branches() {
+            let branches = create_test_branches();
+            let vm = BranchViewModel::new(branches.clone());
+
+            assert_eq!(vm.branches(), &branches[..]);
+        }
+
+        #[test]
+        fn returns_only_merged_branches_as_safe_to_delete() {
+            let branches = create_test_branches();
+            let vm = BranchViewModel::new(branches.clone());
+
+            let expected = vec![&branches[2]]; // feature-2 is the only merged branch
+
+            assert_eq!(vm.safe_to_delete_branches(), expected);
+        }
+    }
 }

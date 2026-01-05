@@ -1,12 +1,7 @@
 use core::fmt;
-use std::{
-    env,
-    error::Error,
-    fmt::write,
-    path::{self, Path},
-};
+use std::{error::Error, path::Path};
 
-use git2::{Branches, Repository};
+use git2::Repository;
 
 mod tui;
 
@@ -18,14 +13,12 @@ fn main() {
 #[cfg(test)]
 mod test {
     use std::{
-        default, env,
+        env,
         error::Error,
-        fmt::{write, Display},
-        io::{Read, Write},
+        fmt::Display,
+        io::Write,
         str::from_utf8,
     };
-
-    use git2::Repository;
 
     use crate::{get_local_branches, BCBranch, BranchRepository, GitRepository, PrStatus};
 
