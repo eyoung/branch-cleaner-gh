@@ -1,4 +1,5 @@
 use iocraft::prelude::*;
+use crossterm::event::KeyCode;
 
 use crate::{BCBranch, PrStatus};
 
@@ -21,6 +22,7 @@ impl ViewState {
 }
 
 /// BranchViewModel manages the business logic for the branch viewer
+#[derive(Clone, Debug)]
 pub struct BranchViewModel {
     state: ViewState,
 }
@@ -150,49 +152,48 @@ fn render_branch(branch: &BCBranch, is_selected: bool) -> impl Into<AnyElement<'
 }
 
 #[component]
-fn BranchListView(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
-    let branches = create_fake_branches();
-    let max_index = branches.len().saturating_sub(1);
-    let mut selected_index = hooks.use_state(|| 0);
+fn BranchList(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
+    use iocraft::TerminalEvent;
+    use std::sync::{Arc, Mutex};
+
+    let view_model = hooks.use_context::<Arc<Mutex<BranchViewModel>>>();
+    let mut system = hooks.use_context_mut::<SystemContext>();
+    let mut should_exit = hooks.use_state(|| false);
 
     // Handle keyboard input
-    hooks.use_future(async move {
-        use crossterm::event::{poll, read, Event, KeyCode};
-        use std::time::Duration;
-
-        loop {
-            // Poll with a small timeout to avoid blocking the render loop
-            if poll(Duration::from_millis(50)).unwrap_or(false) {
-                if let Ok(event) = read() {
-                    match event {
-                        Event::Key(key_event) => match key_event.code {
-                            KeyCode::Up => {
-                                if selected_index > 0 {
-                                    selected_index -= 1;
-                                }
-                            }
-                            KeyCode::Down => {
-                                if selected_index < max_index {
-                                    selected_index += 1;
-                                }
-                            }
-                            KeyCode::Char('q') | KeyCode::Esc => {
-                                std::process::exit(0);
-                            }
-                            _ => {}
-                        },
-                        _ => {}
+    hooks.use_terminal_events({
+        let view_model = Arc::clone(&view_model);
+        move |event| {
+            if let TerminalEvent::Key(key_event) = event {
+                match key_event.code {
+                    KeyCode::Up => {
+                        if let Ok(mut vm) = view_model.lock() {
+                            vm.move_up();
+                        }
                     }
+                    KeyCode::Down => {
+                        if let Ok(mut vm) = view_model.lock() {
+                            vm.move_down();
+                        }
+                    }
+                    KeyCode::Char('q') | KeyCode::Esc => {
+                        should_exit.set(true);
+                    }
+                    _ => {}
                 }
             }
-            // Small async sleep to yield to the executor
-            smol::Timer::after(Duration::from_millis(16)).await;
         }
     });
 
+    if should_exit.get() {
+        system.exit();
+    }
+
+    let vm = view_model.lock().unwrap();
+    let state = vm.state();
     let mut branch_elements = Vec::new();
-    for (idx, branch) in branches.iter().enumerate() {
-        branch_elements.push(render_branch(branch, selected_index == idx));
+    for (idx, branch) in state.branches.iter().enumerate() {
+        branch_elements.push(render_branch(branch, state.selected_index == idx));
     }
 
     element! {
@@ -231,19 +232,20 @@ fn BranchListView(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     }
 }
 
+#[component]
+fn App(_hooks: Hooks) -> impl Into<AnyElement<'static>> {
+    use std::sync::{Arc, Mutex};
+
+    element! {
+        ContextProvider(value: Context::owned(Arc::new(Mutex::new(BranchViewModel::new(create_fake_branches()))))) {
+            BranchList
+        }
+    }
+}
+
 /// Entry point to run the TUI application
 pub fn run_branch_tui() {
-    use crossterm::terminal::{enable_raw_mode, disable_raw_mode};
-
-    // Enable raw mode to capture individual key presses
-    enable_raw_mode().unwrap();
-
-    let result = smol::block_on(element!(BranchListView).render_loop());
-
-    // Ensure raw mode is disabled on exit
-    disable_raw_mode().unwrap();
-
-    result.unwrap();
+    smol::block_on(element! { App }.render_loop()).unwrap();
 }
 
 #[cfg(test)]
