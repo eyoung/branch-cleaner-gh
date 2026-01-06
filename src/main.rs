@@ -5,9 +5,11 @@ use git2::Repository;
 
 mod tui;
 
-fn main() {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Run the TUI application
-    tui::run_branch_tui();
+    tui::run_branch_tui().await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -89,7 +91,7 @@ mod test {
             BCBranch::new("experimental/refactor", PrStatus::NONE),
         ];
 
-        branches
+        let result = branches
             .iter_mut()
             .filter(|it| it.pr_status != PrStatus::MERGED);
 
