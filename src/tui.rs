@@ -1,4 +1,4 @@
-use r3bl_tui::{throws_with_return, ok, CommonResult, TuiColor, ANSIBasicColor, App, ComponentRegistryMap, EventPropagation, GlobalData, HasFocus, InputEvent, Key, KeyPress, SpecialKey, InputDevice, OutputDevice, TerminalWindow, key_press, RenderPipeline, render_pipeline, ZOrder, RenderOp, tui_styled_texts, tui_styled_text, new_style, tui_color, render_tui_styled_texts_into, col, row, RenderOps};
+use r3bl_tui::{throws_with_return, ok, CommonResult, TuiColor, ANSIBasicColor, App, ComponentRegistryMap, EventPropagation, GlobalData, HasFocus, InputEvent, Key, KeyPress, SpecialKey, InputDevice, OutputDevice, TerminalWindow, key_press, RenderPipeline, render_pipeline, ZOrder, RenderOp, tui_styled_texts, tui_styled_text, new_style, tui_color, render_tui_styled_texts_into, col, row, RenderOps, send_signal, TerminalWindowMainThreadSignal};
 
 use crate::{BCBranch, BranchStore, PrStatus};
 
@@ -20,8 +20,8 @@ impl ViewState {
     }
 }
 
-/// BranchViewModel manages branch view logic with dependency-injected store
-/// Combines data fetching with pure view state transformations
+/// BranchViewModel handles business logic and data operations
+/// Kept separate from AppState for testability and clean architecture
 #[derive(Debug, Clone)]
 pub struct BranchViewModel<T: BranchStore> {
     store: T,
@@ -34,8 +34,23 @@ impl<T: BranchStore> BranchViewModel<T> {
     }
 
     /// Loads branches from the store and returns ViewState
-    pub fn load_branches(&self) -> ViewState {
+    pub fn load_initial_state(&self) -> ViewState {
         ViewState::new(self.store.list_branches())
+    }
+
+    /// Moves selection up (mutates state in place - r3bl pattern)
+    pub fn move_up(&self, state: &mut ViewState) {
+        if state.selected_index > 0 {
+            state.selected_index -= 1;
+        }
+    }
+
+    /// Moves selection down (mutates state in place - r3bl pattern)
+    pub fn move_down(&self, state: &mut ViewState) {
+        let max_index = state.branches.len().saturating_sub(1);
+        if state.selected_index < max_index {
+            state.selected_index += 1;
+        }
     }
 
     /// Returns branches that are safe to delete (merged PRs)
@@ -46,55 +61,33 @@ impl<T: BranchStore> BranchViewModel<T> {
             .filter(|b| b.pr_status == PrStatus::MERGED)
             .collect()
     }
-
-    /// Returns a new ViewState with the selection moved up
-    pub fn move_up(&self, state: &ViewState) -> ViewState {
-        let mut new_state = state.clone();
-        if new_state.selected_index > 0 {
-            new_state.selected_index -= 1;
-        }
-        new_state
-    }
-
-    /// Returns a new ViewState with the selection moved down
-    pub fn move_down(&self, state: &ViewState) -> ViewState {
-        let mut new_state = state.clone();
-        let max_index = new_state.branches.len().saturating_sub(1);
-        if new_state.selected_index < max_index {
-            new_state.selected_index += 1;
-        }
-        new_state
-    }
 }
 
-/// AppState wraps ViewState and ViewModel for r3bl_tui's GlobalData
-#[derive(Debug, Clone)]
-pub struct AppState<T: BranchStore> {
-    pub view_state: ViewState,
-    pub view_model: BranchViewModel<T>,
-}
+/// AppState is pure data only, following r3bl_tui Elm architecture
+/// No business logic - just the view state
+pub type AppState = ViewState;
 
-impl<T: BranchStore + Default> Default for AppState<T> {
+impl Default for AppState {
     fn default() -> Self {
-        let view_model = BranchViewModel::new(T::default());
-        Self {
-            view_state: view_model.load_branches(),
-            view_model,
-        }
+        // Empty state - will be populated by run_branch_tui with actual data
+        ViewState::new(vec![])
     }
 }
 
-impl<T: BranchStore> std::fmt::Display for AppState<T> {
+impl std::fmt::Display for AppState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "AppState {{ branches: {} }}", self.view_state.branches.len())
+        write!(f, "AppState {{ branches: {} }}", self.branches.len())
     }
 }
 
-/// AppSignal for async message passing (future GitHub API integration)
+/// AppSignal represents user actions that trigger state changes
+/// Following r3bl_tui's signal pattern for unidirectional data flow
 #[derive(Debug, Clone, Default)]
 pub enum AppSignal {
     #[default]
     Noop,
+    MoveUp,
+    MoveDown,
 }
 
 /// Maps PR status to display colors
@@ -154,16 +147,24 @@ fn create_fake_branches() -> Vec<BCBranch> {
 }
 
 /// BranchCleanerApp implements the App trait for r3bl_tui
-#[derive(Default)]
-pub struct BranchCleanerApp<T: BranchStore>(std::marker::PhantomData<T>);
+/// Holds the ViewModel for business logic operations
+pub struct BranchCleanerApp<T: BranchStore> {
+    view_model: BranchViewModel<T>,
+}
 
-impl<T: BranchStore + Default> App for BranchCleanerApp<T> {
-    type S = AppState<T>;
+impl<T: BranchStore> BranchCleanerApp<T> {
+    pub fn new(view_model: BranchViewModel<T>) -> Self {
+        Self { view_model }
+    }
+}
+
+impl<T: BranchStore> App for BranchCleanerApp<T> {
+    type S = AppState;
     type AS = AppSignal;
 
     fn app_init(
         &mut self,
-        _component_registry_map: &mut ComponentRegistryMap<AppState<T>, AppSignal>,
+        _component_registry_map: &mut ComponentRegistryMap<AppState, AppSignal>,
         _has_focus: &mut HasFocus,
     ) {
         // Minimal initialization - no special setup needed
@@ -172,21 +173,27 @@ impl<T: BranchStore + Default> App for BranchCleanerApp<T> {
     fn app_handle_input_event(
         &mut self,
         input_event: InputEvent,
-        global_data: &mut GlobalData<AppState<T>, AppSignal>,
-        _component_registry_map: &mut ComponentRegistryMap<AppState<T>, AppSignal>,
+        global_data: &mut GlobalData<AppState, AppSignal>,
+        _component_registry_map: &mut ComponentRegistryMap<AppState, AppSignal>,
         _has_focus: &mut HasFocus,
     ) -> CommonResult<EventPropagation> {
         throws_with_return!({
             match input_event {
                 InputEvent::Keyboard(KeyPress::Plain { key }) => match key {
                     Key::SpecialKey(SpecialKey::Up) => {
-                        let new_state = global_data.state.view_model.move_up(&global_data.state.view_state);
-                        global_data.state.view_state = new_state;
+                        // Send signal instead of mutating directly (r3bl pattern)
+                        send_signal!(
+                            global_data.main_thread_channel_sender,
+                            TerminalWindowMainThreadSignal::ApplyAppSignal(AppSignal::MoveUp)
+                        );
                         EventPropagation::ConsumedRender
                     }
                     Key::SpecialKey(SpecialKey::Down) => {
-                        let new_state = global_data.state.view_model.move_down(&global_data.state.view_state);
-                        global_data.state.view_state = new_state;
+                        // Send signal instead of mutating directly (r3bl pattern)
+                        send_signal!(
+                            global_data.main_thread_channel_sender,
+                            TerminalWindowMainThreadSignal::ApplyAppSignal(AppSignal::MoveDown)
+                        );
                         EventPropagation::ConsumedRender
                     }
                     Key::Character('q') => EventPropagation::ExitMainEventLoop,
@@ -200,25 +207,33 @@ impl<T: BranchStore + Default> App for BranchCleanerApp<T> {
     fn app_handle_signal(
         &mut self,
         signal: &AppSignal,
-        _global_data: &mut GlobalData<AppState<T>, AppSignal>,
-        _component_registry_map: &mut ComponentRegistryMap<AppState<T>, AppSignal>,
+        global_data: &mut GlobalData<AppState, AppSignal>,
+        _component_registry_map: &mut ComponentRegistryMap<AppState, AppSignal>,
         _has_focus: &mut HasFocus,
     ) -> CommonResult<EventPropagation> {
         throws_with_return!({
+            let state = &mut global_data.state;
             match signal {
-                AppSignal::Noop => EventPropagation::Propagate,
+                AppSignal::Noop => {}
+                AppSignal::MoveUp => {
+                    self.view_model.move_up(state);
+                }
+                AppSignal::MoveDown => {
+                    self.view_model.move_down(state);
+                }
             }
+            EventPropagation::ConsumedRender
         });
     }
 
     fn app_render(
         &mut self,
-        global_data: &mut GlobalData<AppState<T>, AppSignal>,
-        _component_registry_map: &mut ComponentRegistryMap<AppState<T>, AppSignal>,
+        global_data: &mut GlobalData<AppState, AppSignal>,
+        _component_registry_map: &mut ComponentRegistryMap<AppState, AppSignal>,
         _has_focus: &mut HasFocus,
     ) -> CommonResult<RenderPipeline> {
         throws_with_return!({
-            let state = &global_data.state.view_state;
+            let state = &global_data.state;
             let mut pipeline = render_pipeline!();
 
             pipeline.push(ZOrder::Normal, {
@@ -315,17 +330,24 @@ impl<T: BranchStore + Default> App for BranchCleanerApp<T> {
 }
 
 /// Entry point to run the TUI application
+/// Following r3bl_tui architecture: create store, load state, inject dependencies
 pub async fn run_branch_tui() -> CommonResult<()> {
-    // Initialize app state using InMemoryBranchStore with dependency injection
-    let app_state = AppState::<crate::InMemoryBranchStore>::default();
+    // 1. Create the data store (dependency injection)
+    let store = crate::InMemoryBranchStore::default();
 
-    // Create app instance
-    let app = Box::new(BranchCleanerApp::default());
+    // 2. Create the ViewModel with injected store
+    let view_model = BranchViewModel::new(store);
 
-    // Exit keys
+    // 3. Load initial state from the ViewModel
+    let app_state = view_model.load_initial_state();
+
+    // 4. Create app instance with ViewModel (holds business logic)
+    let app = Box::new(BranchCleanerApp::new(view_model));
+
+    // 5. Exit keys
     let exit_keys = &[InputEvent::Keyboard(key_press! { @char 'q' })];
 
-    // Run r3bl_tui main loop
+    // 6. Run r3bl_tui main loop with pure data state
     let _unused: (GlobalData<_, _>, InputDevice, OutputDevice) =
         TerminalWindow::main_event_loop(app, exit_keys, app_state)?.await?;
 
@@ -368,8 +390,8 @@ mod tests {
             let store = InMemoryBranchStore::new(test_branches.clone());
             let view_model = BranchViewModel::new(store);
 
-            // Act: Load branches through the viewmodel
-            let view_state = view_model.load_branches();
+            // Act: Load initial state from the viewmodel
+            let view_state = view_model.load_initial_state();
 
             // Assert: ViewState contains branches from the store
             let expected_state = ViewState {
@@ -394,32 +416,38 @@ mod tests {
 
         #[test]
         fn move_down_increments_selected_index() {
+            // Arrange
             let branches = create_test_branches();
-            let state = ViewState::new(branches.clone());
+            let mut state = ViewState::new(branches.clone());
             let store = InMemoryBranchStore::new(branches.clone());
             let view_model = BranchViewModel::new(store);
 
-            let new_state = view_model.move_down(&state);
+            // Act: Mutate state in place (r3bl pattern)
+            view_model.move_down(&mut state);
 
+            // Assert: Check entire state
             let expected_state = ViewState {
                 branches: branches.clone(),
                 selected_index: 1,
             };
 
-            assert_eq!(new_state, expected_state);
+            assert_eq!(state, expected_state);
         }
 
         #[test]
         fn move_up_decrements_selected_index() {
+            // Arrange
             let branches = create_test_branches();
-            let state = ViewState::new(branches.clone());
+            let mut state = ViewState::new(branches.clone());
             let store = InMemoryBranchStore::new(branches.clone());
             let view_model = BranchViewModel::new(store);
 
-            let state = view_model.move_down(&state);
-            let state = view_model.move_down(&state);
-            let state = view_model.move_up(&state);
+            // Act: Move down twice, then up once (mutating state)
+            view_model.move_down(&mut state);
+            view_model.move_down(&mut state);
+            view_model.move_up(&mut state);
 
+            // Assert: Check entire state
             let expected_state = ViewState {
                 branches: branches.clone(),
                 selected_index: 1,
