@@ -199,6 +199,74 @@ impl BranchRepository for GitRepository {
     }
 }
 
+/// BranchStore trait for managing BCBranch objects
+/// This is a higher-level abstraction than BranchRepository that works with
+/// rich domain objects (BCBranch) instead of just branch names
+pub trait BranchStore: std::fmt::Debug + Clone + Send + Sync {
+    /// Returns all branches from the store
+    fn list_branches(&self) -> Vec<BCBranch>;
+}
+
+/// In-memory implementation of BranchStore for testing and demo purposes
+#[derive(Debug, Clone)]
+pub struct InMemoryBranchStore {
+    branches: Vec<BCBranch>,
+}
+
+impl InMemoryBranchStore {
+    /// Creates a new InMemoryBranchStore with the given branches
+    pub fn new(branches: Vec<BCBranch>) -> Self {
+        Self { branches }
+    }
+}
+
+impl Default for InMemoryBranchStore {
+    fn default() -> Self {
+        Self {
+            branches: vec![
+                BCBranch::new("main", PrStatus::NONE),
+                BCBranch::with_pr(
+                    "feature/add-tui",
+                    PrStatus::OPEN,
+                    42,
+                    "Add TUI interface with r3bl_tui",
+                ),
+                BCBranch::with_pr(
+                    "old-feature-branch",
+                    PrStatus::MERGED,
+                    23,
+                    "Old feature implementation",
+                ),
+                BCBranch::new("experimental/refactor", PrStatus::NONE),
+                BCBranch::with_pr(
+                    "bugfix/handle-errors",
+                    PrStatus::MERGED,
+                    15,
+                    "Fix error handling in repository",
+                ),
+                BCBranch::with_pr(
+                    "feature/github-integration",
+                    PrStatus::OPEN,
+                    50,
+                    "Integrate GitHub API for PR fetching",
+                ),
+                BCBranch::with_pr(
+                    "cleanup/remove-old-code",
+                    PrStatus::MERGED,
+                    31,
+                    "Remove deprecated functions and cleanup",
+                ),
+            ],
+        }
+    }
+}
+
+impl BranchStore for InMemoryBranchStore {
+    fn list_branches(&self) -> Vec<BCBranch> {
+        self.branches.clone()
+    }
+}
+
 #[derive(Debug)]
 enum BranchCleanerError {
     RepositoryDoesNotExistError,
