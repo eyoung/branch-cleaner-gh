@@ -205,6 +205,9 @@ impl BranchRepository for GitRepository {
 pub trait BranchStore: std::fmt::Debug + Clone + Send + Sync {
     /// Returns all branches from the store
     fn list_branches(&self) -> Vec<BCBranch>;
+
+    /// Deletes branches by name from the store
+    fn delete_branches(&mut self, names: &[String]);
 }
 
 /// In-memory implementation of BranchStore for testing and demo purposes
@@ -264,6 +267,10 @@ impl Default for InMemoryBranchStore {
 impl BranchStore for InMemoryBranchStore {
     fn list_branches(&self) -> Vec<BCBranch> {
         self.branches.clone()
+    }
+
+    fn delete_branches(&mut self, names: &[String]) {
+        self.branches.retain(|b| !names.contains(&b.name));
     }
 }
 

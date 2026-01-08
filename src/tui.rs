@@ -8,14 +8,23 @@ use crate::{BCBranch, BranchStore, PrStatus};
 pub struct ViewState {
     pub branches: Vec<BCBranch>,
     pub selected_index: usize,
+    pub selected_branches: Vec<String>, // Branch names selected for deletion
 }
 
 impl ViewState {
     /// Create a new ViewState with the given branches
+    /// By default, selects all merged branches (safe to delete)
     pub fn new(branches: Vec<BCBranch>) -> Self {
+        let selected_branches = branches
+            .iter()
+            .filter(|b| b.pr_status == PrStatus::MERGED)
+            .map(|b| b.name.clone())
+            .collect();
+
         Self {
             branches,
             selected_index: 0,
+            selected_branches,
         }
     }
 }
@@ -61,6 +70,44 @@ impl<T: BranchStore> BranchViewModel<T> {
             .filter(|b| b.pr_status == PrStatus::MERGED)
             .collect()
     }
+
+    /// Toggles selection of the current branch (add if not selected, remove if selected)
+    pub fn toggle_selection(&self, state: &mut ViewState) {
+        if state.selected_index >= state.branches.len() {
+            return; // Safety: invalid index
+        }
+
+        let current_branch_name = &state.branches[state.selected_index].name;
+
+        if let Some(pos) = state.selected_branches.iter().position(|name| name == current_branch_name) {
+            // Already selected - remove it
+            state.selected_branches.remove(pos);
+        } else {
+            // Not selected - add it
+            state.selected_branches.push(current_branch_name.clone());
+        }
+    }
+
+    /// Deletes selected branches from the store and updates the state
+    pub fn delete_selected_branches(&mut self, state: &mut ViewState) {
+        // 1. Delete branches from the store
+        self.store.delete_branches(&state.selected_branches);
+
+        // 2. Get updated branches from store
+        let new_branches = self.store.list_branches();
+
+        // 3. Select all merged branches in the new list (default selection)
+        let new_selected = new_branches
+            .iter()
+            .filter(|b| b.pr_status == PrStatus::MERGED)
+            .map(|b| b.name.clone())
+            .collect();
+
+        // 4. Update state with new branches and selection
+        state.branches = new_branches;
+        state.selected_branches = new_selected;
+        state.selected_index = 0; // Reset to beginning after deletion
+    }
 }
 
 /// AppState is pure data only, following r3bl_tui Elm architecture
@@ -88,6 +135,8 @@ pub enum AppSignal {
     Noop,
     MoveUp,
     MoveDown,
+    ToggleSelection,
+    DeleteSelected,
 }
 
 /// Maps PR status to display colors
@@ -181,7 +230,6 @@ impl<T: BranchStore> App for BranchCleanerApp<T> {
             match input_event {
                 InputEvent::Keyboard(KeyPress::Plain { key }) => match key {
                     Key::SpecialKey(SpecialKey::Up) => {
-                        // Send signal instead of mutating directly (r3bl pattern)
                         send_signal!(
                             global_data.main_thread_channel_sender,
                             TerminalWindowMainThreadSignal::ApplyAppSignal(AppSignal::MoveUp)
@@ -189,10 +237,25 @@ impl<T: BranchStore> App for BranchCleanerApp<T> {
                         EventPropagation::ConsumedRender
                     }
                     Key::SpecialKey(SpecialKey::Down) => {
-                        // Send signal instead of mutating directly (r3bl pattern)
                         send_signal!(
                             global_data.main_thread_channel_sender,
                             TerminalWindowMainThreadSignal::ApplyAppSignal(AppSignal::MoveDown)
+                        );
+                        EventPropagation::ConsumedRender
+                    }
+                    Key::Character(' ') => {
+                        // Space to toggle selection
+                        send_signal!(
+                            global_data.main_thread_channel_sender,
+                            TerminalWindowMainThreadSignal::ApplyAppSignal(AppSignal::ToggleSelection)
+                        );
+                        EventPropagation::ConsumedRender
+                    }
+                    Key::Character('d') => {
+                        // 'd' to delete selected branches
+                        send_signal!(
+                            global_data.main_thread_channel_sender,
+                            TerminalWindowMainThreadSignal::ApplyAppSignal(AppSignal::DeleteSelected)
                         );
                         EventPropagation::ConsumedRender
                     }
@@ -220,6 +283,12 @@ impl<T: BranchStore> App for BranchCleanerApp<T> {
                 }
                 AppSignal::MoveDown => {
                     self.view_model.move_down(state);
+                }
+                AppSignal::ToggleSelection => {
+                    self.view_model.toggle_selection(state);
+                }
+                AppSignal::DeleteSelected => {
+                    self.view_model.delete_selected_branches(state);
                 }
             }
             EventPropagation::ConsumedRender
@@ -254,11 +323,15 @@ impl<T: BranchStore> App for BranchCleanerApp<T> {
                 // Branch list
                 let mut current_row = 2;
                 for (idx, branch) in state.branches.iter().enumerate() {
-                    let is_selected = idx == state.selected_index;
-                    let prefix = if is_selected { "> " } else { "  " };
+                    let is_cursor_here = idx == state.selected_index;
+                    let is_marked_for_deletion = state.selected_branches.contains(&branch.name);
+
+                    // Cursor indicator and checkbox
+                    let cursor = if is_cursor_here { ">" } else { " " };
+                    let checkbox = if is_marked_for_deletion { "[x]" } else { "[ ]" };
 
                     // Branch name with selection indicator
-                    let branch_text = format!("{}{}", prefix, branch.name);
+                    let branch_text = format!("{} {} {}", cursor, checkbox, branch.name);
                     let branch_color = get_status_color(branch.pr_status);
                     let branch_styled_texts = tui_styled_texts! {
                         tui_styled_text! {
@@ -305,7 +378,7 @@ impl<T: BranchStore> App for BranchCleanerApp<T> {
                 let footer_styled_texts = tui_styled_texts! {
                     tui_styled_text! {
                         @style: new_style!(color_fg: {grey_color}),
-                        @text: "Navigation: ↑↓ arrows | Quit: q"
+                        @text: "↑↓: Navigate | Space: Toggle selection | d: Delete selected | q: Quit"
                     },
                 };
                 render_ops.push(RenderOp::MoveCursorPositionAbs(col(0) + row(current_row)));
@@ -378,6 +451,7 @@ mod tests {
             let expected_state = ViewState {
                 branches: branches.clone(),
                 selected_index: 0,
+                selected_branches: vec!["feature-2".to_owned()], // Only merged branch
             };
 
             assert_eq!(state, expected_state);
@@ -397,6 +471,7 @@ mod tests {
             let expected_state = ViewState {
                 branches: test_branches,
                 selected_index: 0,
+                selected_branches: vec!["feature-2".to_owned()], // Only merged branch
             };
 
             assert_eq!(view_state, expected_state);
@@ -429,6 +504,7 @@ mod tests {
             let expected_state = ViewState {
                 branches: branches.clone(),
                 selected_index: 1,
+                selected_branches: vec!["feature-2".to_owned()], // Selection unchanged
             };
 
             assert_eq!(state, expected_state);
@@ -451,6 +527,77 @@ mod tests {
             let expected_state = ViewState {
                 branches: branches.clone(),
                 selected_index: 1,
+                selected_branches: vec!["feature-2".to_owned()], // Selection unchanged
+            };
+
+            assert_eq!(state, expected_state);
+        }
+
+        #[test]
+        fn toggle_selection_adds_unselected_branch() {
+            // Arrange: State at index 0 (main branch, not pre-selected)
+            let branches = create_test_branches();
+            let mut state = ViewState::new(branches.clone());
+            let store = InMemoryBranchStore::new(branches.clone());
+            let view_model = BranchViewModel::new(store);
+
+            // Act: Toggle selection of current branch (main at index 0)
+            view_model.toggle_selection(&mut state);
+
+            // Assert: main is now selected
+            let expected_state = ViewState {
+                branches: branches.clone(),
+                selected_index: 0,
+                selected_branches: vec!["feature-2".to_owned(), "main".to_owned()],
+            };
+
+            assert_eq!(state, expected_state);
+        }
+
+        #[test]
+        fn toggle_selection_removes_selected_branch() {
+            // Arrange: Move to feature-2 (index 2, already selected)
+            let branches = create_test_branches();
+            let mut state = ViewState::new(branches.clone());
+            let store = InMemoryBranchStore::new(branches.clone());
+            let view_model = BranchViewModel::new(store);
+            view_model.move_down(&mut state);
+            view_model.move_down(&mut state);
+
+            // Act: Toggle selection of current branch (feature-2)
+            view_model.toggle_selection(&mut state);
+
+            // Assert: feature-2 is now unselected
+            let expected_state = ViewState {
+                branches: branches.clone(),
+                selected_index: 2,
+                selected_branches: vec![], // Empty - feature-2 removed
+            };
+
+            assert_eq!(state, expected_state);
+        }
+
+        #[test]
+        fn delete_selected_branches_removes_them_and_reloads_state() {
+            // Arrange: State with feature-2 selected (merged)
+            let branches = create_test_branches();
+            let mut state = ViewState::new(branches.clone());
+            let store = InMemoryBranchStore::new(branches.clone());
+            let mut view_model = BranchViewModel::new(store);
+
+            // Act: Delete selected branches
+            view_model.delete_selected_branches(&mut state);
+
+            // Assert: feature-2 is deleted, state reloaded with remaining branches
+            let expected_branches = vec![
+                BCBranch::new("main", PrStatus::NONE),
+                BCBranch::with_pr("feature-1", PrStatus::OPEN, 1, "Feature 1"),
+            ];
+
+            let expected_state = ViewState {
+                branches: expected_branches,
+                selected_index: 0, // Reset to 0
+                selected_branches: vec![], // No merged branches remain
             };
 
             assert_eq!(state, expected_state);
