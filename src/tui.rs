@@ -62,15 +62,6 @@ impl<T: BranchStore> BranchViewModel<T> {
         }
     }
 
-    /// Returns branches that are safe to delete (merged PRs)
-    pub fn safe_to_delete_branches<'a>(&self, state: &'a ViewState) -> Vec<&'a BCBranch> {
-        state
-            .branches
-            .iter()
-            .filter(|b| b.pr_status == PrStatus::MERGED)
-            .collect()
-    }
-
     /// Toggles selection of the current branch (add if not selected, remove if selected)
     pub fn toggle_selection(&self, state: &mut ViewState) {
         if state.selected_index >= state.branches.len() {
@@ -155,44 +146,6 @@ fn format_status_for_display(status: PrStatus) -> &'static str {
         PrStatus::MERGED => "MERGED ✓",
         PrStatus::NONE => "No PR",
     }
-}
-
-/// Creates fake branch data for testing the TUI
-fn create_fake_branches() -> Vec<BCBranch> {
-    vec![
-        BCBranch::new("main", PrStatus::NONE),
-        BCBranch::with_pr(
-            "feature/add-tui",
-            PrStatus::OPEN,
-            42,
-            "Add TUI interface with iocraft",
-        ),
-        BCBranch::with_pr(
-            "old-feature-branch",
-            PrStatus::MERGED,
-            23,
-            "Old feature implementation",
-        ),
-        BCBranch::new("experimental/refactor", PrStatus::NONE),
-        BCBranch::with_pr(
-            "bugfix/handle-errors",
-            PrStatus::MERGED,
-            15,
-            "Fix error handling in repository",
-        ),
-        BCBranch::with_pr(
-            "feature/github-integration",
-            PrStatus::OPEN,
-            50,
-            "Integrate GitHub API for PR fetching",
-        ),
-        BCBranch::with_pr(
-            "cleanup/remove-old-code",
-            PrStatus::MERGED,
-            31,
-            "Remove deprecated functions and cleanup",
-        ),
-    ]
 }
 
 /// BranchCleanerApp implements the App trait for r3bl_tui
@@ -404,23 +357,20 @@ impl<T: BranchStore> App for BranchCleanerApp<T> {
 
 /// Entry point to run the TUI application
 /// Following r3bl_tui architecture: create store, load state, inject dependencies
-pub async fn run_branch_tui() -> CommonResult<()> {
-    // 1. Create the data store (dependency injection)
-    let store = crate::InMemoryBranchStore::default();
-
-    // 2. Create the ViewModel with injected store
+pub async fn run_branch_tui<T: BranchStore>(store: T) -> CommonResult<()> {
+    // 1. Create the ViewModel with injected store
     let view_model = BranchViewModel::new(store);
 
-    // 3. Load initial state from the ViewModel
+    // 2. Load initial state from the ViewModel
     let app_state = view_model.load_initial_state();
 
-    // 4. Create app instance with ViewModel (holds business logic)
+    // 3. Create app instance with ViewModel (holds business logic)
     let app = Box::new(BranchCleanerApp::new(view_model));
 
-    // 5. Exit keys
+    // 4. Exit keys
     let exit_keys = &[InputEvent::Keyboard(key_press! { @char 'q' })];
 
-    // 6. Run r3bl_tui main loop with pure data state
+    // 5. Run r3bl_tui main loop with pure data state
     let _unused: (GlobalData<_, _>, InputDevice, OutputDevice) =
         TerminalWindow::main_event_loop(app, exit_keys, app_state)?.await?;
 
@@ -475,18 +425,6 @@ mod tests {
             };
 
             assert_eq!(view_state, expected_state);
-        }
-
-        #[test]
-        fn returns_only_merged_branches_as_safe_to_delete() {
-            let branches = create_test_branches();
-            let state = ViewState::new(branches.clone());
-            let store = InMemoryBranchStore::new(branches.clone());
-            let view_model = BranchViewModel::new(store);
-
-            let expected = vec![&branches[2]]; // feature-2 is the only merged branch
-
-            assert_eq!(view_model.safe_to_delete_branches(&state), expected);
         }
 
         #[test]

@@ -1,295 +1,67 @@
 use core::fmt;
-use std::{error::Error, path::Path};
 
-use git2::Repository;
-
+mod error;
+mod git;
+mod github;
+mod store;
 mod tui;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Run the TUI application
-    tui::run_branch_tui().await?;
-    Ok(())
-}
+// Re-export for convenience
+pub use error::{BranchCleanerError, Result};
+pub use store::{BranchStore, GitHubBranchStore, InMemoryBranchStore};
 
-#[cfg(test)]
-mod test {
-    use std::{
-        env,
-        error::Error,
-        fmt::Display,
-        io::Write,
-        str::from_utf8,
-    };
-
-    use crate::{get_local_branches, BCBranch, BranchRepository, GitRepository, PrStatus};
-
-    #[test]
-    fn can_list_local_branches_in_repository() -> Result<(), Box<dyn Error>> {
-        let expected = vec!["main".to_owned()];
-        let path = env::current_dir()?;
-        let repo = GitRepository::new(&path)?;
-
-        let branch_names = get_local_branches(&repo);
-
-        assert_eq!(expected, branch_names);
-        Ok(())
-    }
-
-    #[test]
-    fn can_list_multiple_local_branches_in_repository() {
-        let expected = make_mock_branch_names();
-
-        let branches = MockBranches::new(make_mock_branch_names());
-
-        assert_eq!(expected, get_local_branches(&branches))
-    }
-
-    #[test]
-    fn error_is_printed_if_path_doesnt_contian_repo() -> Result<(), Box<dyn Error>> {
-        let path = env::current_dir()?;
-        let repo = FailToOpenRepo::new(&path);
-        let mut out = TestErr::default();
-
-        if let Err(e) = repo {
-            write!(out, "{}", e)?;
-        }
-
-        assert_eq!(
-            out.written.as_deref(),
-            Some("Directory is not a git repository")
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn when_user_request_branches_lists_names_with_pr_status() -> Result<(), Box<dyn Error>> {
-        let path = env::current_dir()?;
-        let repo = MockBranches::new(make_mock_branch_names());
-        let mut writer = TestErr::default();
-
-        let expected = "main | open\nfeature/multiple | merged\nexperimental/refactor | No PR\n";
-
-        let branch_status = list_branches(&repo);
-
-        branch_status.iter().for_each(|it| {
-            writeln!(writer, "{}", it);
-        });
-
-        assert_eq!(writer.written, Some(expected.to_owned()));
-
-        Ok(())
-    }
-
-    #[test]
-    fn given_branches_deletes_merged() {
-        let mut repo = MockBranches::new(make_mock_branch_names());
-        let mut branches = list_branches(&repo);
-
-        let expected = vec![
-            BCBranch::new("main", PrStatus::OPEN),
-            BCBranch::new("experimental/refactor", PrStatus::NONE),
-        ];
-
-        let result = branches
-            .iter_mut()
-            .filter(|it| it.pr_status != PrStatus::MERGED);
-
-        assert_eq!(branches, expected);
-    }
-
-    fn list_branches<T: BranchRepository>(repo: &T) -> Vec<BCBranch> {
-        vec![
-            BCBranch::new("main", PrStatus::OPEN),
-            BCBranch::new("feature/multiple", PrStatus::MERGED),
-            BCBranch::new("experimental/refactor", PrStatus::NONE),
-        ]
-    }
-
-    #[derive(Default)]
-    struct TestErr {
-        written: Option<String>,
-    }
-
-    impl Write for TestErr {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            if let Some(ref mut output) = &mut self.written {
-                let next = from_utf8(buf).unwrap();
-                output.push_str(next);
-                Ok(next.len())
-            } else {
-                self.written = Some(from_utf8(buf).unwrap().to_owned());
-                Ok(buf.len())
-            }
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    struct MockBranches {
-        branches: Vec<String>,
-    }
-
-    impl MockBranches {
-        fn new(branches: Vec<String>) -> Self {
-            Self { branches }
-        }
-    }
-
-    impl BranchRepository for MockBranches {
-        fn list_branch_names(&self) -> Vec<String> {
-            return self.branches.clone();
-        }
-
-        fn new(_path: &std::path::Path) -> Result<impl BranchRepository, Box<dyn Error>> {
-            Ok(Self::new(make_mock_branch_names()))
-        }
-    }
-
-    fn make_mock_branch_names() -> Vec<String> {
-        vec!["main", "feature/multiple"]
-            .into_iter()
-            .map(str::to_owned)
-            .collect()
-    }
-
-    struct FailToOpenRepo {}
-
-    impl BranchRepository for FailToOpenRepo {
-        fn list_branch_names(&self) -> Vec<String> {
-            todo!()
-        }
-
-        fn new(path: &std::path::Path) -> Result<Self, Box<dyn Error>> {
-            Err(Box::new(
-                crate::BranchCleanerError::RepositoryDoesNotExistError,
-            ))
-        }
-    }
-}
-
-fn get_local_branches<T: BranchRepository>(branches: &T) -> Vec<String> {
-    branches.list_branch_names()
-}
-
-trait BranchRepository {
-    fn new(path: &Path) -> Result<impl BranchRepository, Box<dyn Error>>;
-    fn list_branch_names(&self) -> Vec<String>;
-}
-
-struct GitRepository {
-    repo: Repository,
-}
-
-impl BranchRepository for GitRepository {
-    fn list_branch_names(&self) -> Vec<String> {
-        self.repo
-            .branches(Some(git2::BranchType::Local))
-            .unwrap()
-            .into_iter()
-            .map(|branch| branch.unwrap().0.name().unwrap().unwrap().to_owned())
-            .collect()
-    }
-
-    fn new(path: &Path) -> Result<impl BranchRepository, Box<dyn Error>> {
-        let r = Repository::open(&path)?;
-        Ok(GitRepository { repo: r })
-    }
-}
-
-/// BranchStore trait for managing BCBranch objects
-/// This is a higher-level abstraction than BranchRepository that works with
-/// rich domain objects (BCBranch) instead of just branch names
-pub trait BranchStore: std::fmt::Debug + Clone + Send + Sync {
-    /// Returns all branches from the store
-    fn list_branches(&self) -> Vec<BCBranch>;
-
-    /// Deletes branches by name from the store
-    fn delete_branches(&mut self, names: &[String]);
-}
-
-/// In-memory implementation of BranchStore for testing and demo purposes
+/// Enum wrapper to allow either GitHub or In-Memory store
 #[derive(Debug, Clone)]
-pub struct InMemoryBranchStore {
-    branches: Vec<BCBranch>,
+pub enum AppBranchStore {
+    GitHub(GitHubBranchStore),
+    InMemory(InMemoryBranchStore),
 }
 
-impl InMemoryBranchStore {
-    /// Creates a new InMemoryBranchStore with the given branches
-    pub fn new(branches: Vec<BCBranch>) -> Self {
-        Self { branches }
-    }
-}
-
-impl Default for InMemoryBranchStore {
-    fn default() -> Self {
-        Self {
-            branches: vec![
-                BCBranch::new("main", PrStatus::NONE),
-                BCBranch::with_pr(
-                    "feature/add-tui",
-                    PrStatus::OPEN,
-                    42,
-                    "Add TUI interface with r3bl_tui",
-                ),
-                BCBranch::with_pr(
-                    "old-feature-branch",
-                    PrStatus::MERGED,
-                    23,
-                    "Old feature implementation",
-                ),
-                BCBranch::new("experimental/refactor", PrStatus::NONE),
-                BCBranch::with_pr(
-                    "bugfix/handle-errors",
-                    PrStatus::MERGED,
-                    15,
-                    "Fix error handling in repository",
-                ),
-                BCBranch::with_pr(
-                    "feature/github-integration",
-                    PrStatus::OPEN,
-                    50,
-                    "Integrate GitHub API for PR fetching",
-                ),
-                BCBranch::with_pr(
-                    "cleanup/remove-old-code",
-                    PrStatus::MERGED,
-                    31,
-                    "Remove deprecated functions and cleanup",
-                ),
-            ],
-        }
-    }
-}
-
-impl BranchStore for InMemoryBranchStore {
+impl BranchStore for AppBranchStore {
     fn list_branches(&self) -> Vec<BCBranch> {
-        self.branches.clone()
+        match self {
+            AppBranchStore::GitHub(store) => store.list_branches(),
+            AppBranchStore::InMemory(store) => store.list_branches(),
+        }
     }
 
     fn delete_branches(&mut self, names: &[String]) {
-        self.branches.retain(|b| !names.contains(&b.name));
-    }
-}
-
-#[derive(Debug)]
-enum BranchCleanerError {
-    RepositoryDoesNotExistError,
-}
-
-impl std::error::Error for BranchCleanerError {}
-
-impl fmt::Display for BranchCleanerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            BranchCleanerError::RepositoryDoesNotExistError => {
-                write!(f, "Directory is not a git repository")
-            }
+            AppBranchStore::GitHub(store) => store.delete_branches(names),
+            AppBranchStore::InMemory(store) => store.delete_branches(names),
         }
     }
 }
+
+#[tokio::main]
+async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    // Detect repository mode and create appropriate store
+    let store = detect_repository_mode().await;
+
+    // Run the TUI application with the store
+    tui::run_branch_tui(store).await?;
+    Ok(())
+}
+
+async fn detect_repository_mode() -> AppBranchStore {
+    match GitHubBranchStore::new(".") {
+        Ok(store) => {
+            // Pre-fetch GitHub data asynchronously
+            if let Err(e) = store.load().await {
+                eprintln!("Warning: Failed to load GitHub data: {}", e);
+            }
+            AppBranchStore::GitHub(store)
+        }
+        Err(e) => {
+            eprintln!("Could not initialize GitHub store: {}", e);
+            eprintln!("Running in demo mode with fake data.");
+            AppBranchStore::InMemory(InMemoryBranchStore::default())
+        }
+    }
+}
+
+// Tests have been moved to their respective modules (git.rs, github.rs, store.rs, tui.rs)
+
 
 // Branch information structures
 #[derive(Debug, PartialEq, Clone, Copy)]
