@@ -38,83 +38,52 @@ impl GitHubClient {
     }
 
     /// Fetches PR info for a branch name, returns (status, number, title)
+    /// Only finds PRs where this branch is the SOURCE (head), not the target (base)
     pub async fn get_pr_for_branch(
         &self,
         branch_name: &str,
     ) -> Result<Option<(PrStatus, u32, String)>> {
-        // Try to list PRs with this branch as head
-        // Use format "owner:branch" for forks, or just "branch" for same repo
-        let head_ref = format!("{}:{}", self.owner, branch_name);
+        // Try both formats: plain branch name (same-repo PRs) and owner:branch (fork PRs)
+        let head_formats = [
+            branch_name.to_string(),                           // "feature-branch"
+            format!("{}:{}", self.owner, branch_name),          // "owner:feature-branch"
+        ];
 
-        let result = self
-            .octocrab
-            .pulls(&self.owner, &self.repo)
-            .list()
-            .head(&head_ref)
-            .state(params::State::All) // Get both open and closed PRs
-            .per_page(1)
-            .send()
-            .await;
+        for head_format in &head_formats {
+            let result = self
+                .octocrab
+                .pulls(&self.owner, &self.repo)
+                .list()
+                .head(head_format)
+                .state(params::State::All) // Get both open and closed PRs
+                .per_page(1)
+                .send()
+                .await;
 
-        match result {
-            Ok(page) => {
+            if let Ok(page) = result {
                 if let Some(pr) = page.items.first() {
-                    let status = if pr.merged_at.is_some() {
-                        PrStatus::MERGED
-                    } else {
-                        // Check if PR is open using matches! macro
-                        match &pr.state {
-                            Some(state) if matches!(state, octocrab::models::IssueState::Open) => {
-                                PrStatus::OPEN
-                            }
-                            _ => PrStatus::NONE,
-                        }
-                    };
-
-                    let title = pr.title.clone().unwrap_or_default();
-                    let number = pr.number as u32;
-
-                    Ok(Some((status, number, title)))
-                } else {
-                    // Try without owner prefix (for same-repo PRs)
-                    let result_without_owner = self
-                        .octocrab
-                        .pulls(&self.owner, &self.repo)
-                        .list()
-                        .head(branch_name)
-                        .state(params::State::All)
-                        .per_page(1)
-                        .send()
-                        .await;
-
-                    match result_without_owner {
-                        Ok(page) if page.items.first().is_some() => {
-                            let pr = page.items.first().unwrap();
-                            let status = if pr.merged_at.is_some() {
-                                PrStatus::MERGED
-                            } else {
-                                match &pr.state {
-                                    Some(state) if matches!(state, octocrab::models::IssueState::Open) => {
-                                        PrStatus::OPEN
-                                    }
-                                    _ => PrStatus::NONE,
+                    // Verify this PR actually has our branch as the head (source)
+                    if pr.head.ref_field.as_str() == branch_name {
+                        let status = if pr.merged_at.is_some() {
+                            PrStatus::MERGED
+                        } else {
+                            match &pr.state {
+                                Some(state) if matches!(state, octocrab::models::IssueState::Open) => {
+                                    PrStatus::OPEN
                                 }
-                            };
+                                _ => PrStatus::NONE,
+                            }
+                        };
 
-                            let title = pr.title.clone().unwrap_or_default();
-                            let number = pr.number as u32;
-
-                            Ok(Some((status, number, title)))
-                        }
-                        _ => Ok(None),
+                        let title = pr.title.clone().unwrap_or_default();
+                        let number = pr.number as u32;
+                        return Ok(Some((status, number, title)));
                     }
                 }
             }
-            Err(_) => {
-                // API error - return None to mark as no PR
-                Ok(None)
-            }
         }
+
+        Ok(None) // No PR found with this branch as source
     }
 
     /// Enriches branch names with PR information
