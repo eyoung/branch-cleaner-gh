@@ -1,4 +1,12 @@
-use r3bl_tui::{throws_with_return, ok, CommonResult, TuiColor, ANSIBasicColor, App, ComponentRegistryMap, EventPropagation, GlobalData, HasFocus, InputEvent, Key, KeyPress, SpecialKey, InputDevice, OutputDevice, TerminalWindow, key_press, RenderPipeline, render_pipeline, ZOrder, RenderOp, tui_styled_texts, tui_styled_text, new_style, tui_color, render_tui_styled_texts_into, col, row, RenderOps};
+use ratatui::{
+    crossterm::event::{self, Event, KeyCode, KeyEventKind},
+    layout::{Constraint, Layout},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, List, ListItem, ListState, Paragraph},
+    Frame,
+};
+use std::time::Duration;
 
 use crate::{BCBranch, PrStatus};
 
@@ -54,39 +62,13 @@ impl BranchViewModel {
     }
 }
 
-/// AppState wraps ViewState for r3bl_tui's GlobalData
-#[derive(Debug, Clone)]
-pub struct AppState {
-    pub view_state: ViewState,
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self {
-            view_state: ViewState::new(vec![]),
-        }
-    }
-}
-
-impl std::fmt::Display for AppState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "AppState {{ branches: {} }}", self.view_state.branches.len())
-    }
-}
-
-/// AppSignal for async message passing (future GitHub API integration)
-#[derive(Debug, Clone, Default)]
-pub enum AppSignal {
-    #[default]
-    Noop,
-}
 
 /// Maps PR status to display colors
-fn get_status_color(status: PrStatus) -> TuiColor {
+fn get_status_color(status: PrStatus) -> Color {
     match status {
-        PrStatus::MERGED => TuiColor::Basic(ANSIBasicColor::Green),   // Safe to delete
-        PrStatus::OPEN => TuiColor::Basic(ANSIBasicColor::Yellow),    // Caution
-        PrStatus::NONE => TuiColor::Basic(ANSIBasicColor::White),  // Default
+        PrStatus::MERGED => Color::Green,   // Safe to delete
+        PrStatus::OPEN => Color::Yellow,    // Caution
+        PrStatus::NONE => Color::White,     // Default
     }
 }
 
@@ -137,185 +119,144 @@ fn create_fake_branches() -> Vec<BCBranch> {
     ]
 }
 
-/// BranchCleanerApp implements the App trait for r3bl_tui
-#[derive(Default)]
-pub struct BranchCleanerApp;
+/// App structure holds the application state
+struct App {
+    view_state: ViewState,
+    list_state: ListState,
+}
 
-impl App for BranchCleanerApp {
-    type S = AppState;
-    type AS = AppSignal;
+impl App {
+    fn new(branches: Vec<BCBranch>) -> Self {
+        let mut list_state = ListState::default();
+        list_state.select(Some(0));
 
-    fn app_init(
-        &mut self,
-        _component_registry_map: &mut ComponentRegistryMap<AppState, AppSignal>,
-        _has_focus: &mut HasFocus,
-    ) {
-        // Minimal initialization - no special setup needed
+        Self {
+            view_state: ViewState::new(branches),
+            list_state,
+        }
     }
 
-    fn app_handle_input_event(
-        &mut self,
-        input_event: InputEvent,
-        global_data: &mut GlobalData<AppState, AppSignal>,
-        _component_registry_map: &mut ComponentRegistryMap<AppState, AppSignal>,
-        _has_focus: &mut HasFocus,
-    ) -> CommonResult<EventPropagation> {
-        throws_with_return!({
-            match input_event {
-                InputEvent::Keyboard(KeyPress::Plain { key }) => match key {
-                    Key::SpecialKey(SpecialKey::Up) => {
-                        let new_state = BranchViewModel::move_up(&global_data.state.view_state);
-                        global_data.state.view_state = new_state;
-                        EventPropagation::ConsumedRender
-                    }
-                    Key::SpecialKey(SpecialKey::Down) => {
-                        let new_state = BranchViewModel::move_down(&global_data.state.view_state);
-                        global_data.state.view_state = new_state;
-                        EventPropagation::ConsumedRender
-                    }
-                    Key::Character('q') => EventPropagation::ExitMainEventLoop,
-                    _ => EventPropagation::Propagate,
-                },
-                _ => EventPropagation::Propagate,
+    fn handle_event(&mut self, event: Event) -> bool {
+        if let Event::Key(key) = event {
+            if key.kind != KeyEventKind::Press {
+                return false;
             }
-        });
-    }
 
-    fn app_handle_signal(
-        &mut self,
-        signal: &AppSignal,
-        _global_data: &mut GlobalData<AppState, AppSignal>,
-        _component_registry_map: &mut ComponentRegistryMap<AppState, AppSignal>,
-        _has_focus: &mut HasFocus,
-    ) -> CommonResult<EventPropagation> {
-        throws_with_return!({
-            match signal {
-                AppSignal::Noop => EventPropagation::Propagate,
-            }
-        });
-    }
-
-    fn app_render(
-        &mut self,
-        global_data: &mut GlobalData<AppState, AppSignal>,
-        _component_registry_map: &mut ComponentRegistryMap<AppState, AppSignal>,
-        _has_focus: &mut HasFocus,
-    ) -> CommonResult<RenderPipeline> {
-        throws_with_return!({
-            let state = &global_data.state.view_state;
-            let mut pipeline = render_pipeline!();
-
-            pipeline.push(ZOrder::Normal, {
-                let mut render_ops = RenderOps::default();
-                render_ops.push(RenderOp::ResetColor);
-
-                // Header
-                let header_color = tui_color!(hex "#00FFFF");
-                let header_styled_texts = tui_styled_texts! {
-                    tui_styled_text! {
-                        @style: new_style!(bold color_fg: {header_color}),
-                        @text: "Branch Cleaner - Git Branch Manager"
-                    },
-                };
-                render_ops.push(RenderOp::MoveCursorPositionAbs(col(0) + row(0)));
-                render_tui_styled_texts_into(&header_styled_texts, &mut render_ops);
-
-                // Branch list
-                let mut current_row = 2;
-                for (idx, branch) in state.branches.iter().enumerate() {
-                    let is_selected = idx == state.selected_index;
-                    let prefix = if is_selected { "> " } else { "  " };
-
-                    // Branch name with selection indicator
-                    let branch_text = format!("{}{}", prefix, branch.name);
-                    let branch_color = get_status_color(branch.pr_status);
-                    let branch_styled_texts = tui_styled_texts! {
-                        tui_styled_text! {
-                            @style: new_style!(bold color_fg: {branch_color}),
-                            @text: &branch_text
-                        },
-                    };
-                    render_ops.push(RenderOp::MoveCursorPositionAbs(col(0) + row(current_row)));
-                    render_tui_styled_texts_into(&branch_styled_texts, &mut render_ops);
-                    current_row += 1;
-
-                    // PR info if available
-                    if let (Some(pr_number), Some(pr_title)) = (branch.pr_number, &branch.pr_title) {
-                        let pr_text = format!("    └─ PR #{}: {}", pr_number, pr_title);
-                        let grey_color = TuiColor::Basic(ANSIBasicColor::Gray);
-                        let pr_styled_texts = tui_styled_texts! {
-                            tui_styled_text! {
-                                @style: new_style!(color_fg: {grey_color}),
-                                @text: &pr_text
-                            },
-                        };
-                        render_ops.push(RenderOp::MoveCursorPositionAbs(col(0) + row(current_row)));
-                        render_tui_styled_texts_into(&pr_styled_texts, &mut render_ops);
-                        current_row += 1;
-                    }
-
-                    // Status
-                    let status_text = format!("    └─ Status: {}", format_status_for_display(branch.pr_status));
-                    let status_color = get_status_color(branch.pr_status);
-                    let status_styled_texts = tui_styled_texts! {
-                        tui_styled_text! {
-                            @style: new_style!(color_fg: {status_color}),
-                            @text: &status_text
-                        },
-                    };
-                    render_ops.push(RenderOp::MoveCursorPositionAbs(col(0) + row(current_row)));
-                    render_tui_styled_texts_into(&status_styled_texts, &mut render_ops);
-                    current_row += 1;
+            match key.code {
+                KeyCode::Char('q') => return true,
+                KeyCode::Up => {
+                    self.view_state = BranchViewModel::move_up(&self.view_state);
+                    self.list_state.select(Some(self.view_state.selected_index));
                 }
-
-                // Footer
-                current_row += 1;
-                let grey_color = TuiColor::Basic(ANSIBasicColor::Gray);
-                let footer_styled_texts = tui_styled_texts! {
-                    tui_styled_text! {
-                        @style: new_style!(color_fg: {grey_color}),
-                        @text: "Navigation: ↑↓ arrows | Quit: q"
-                    },
-                };
-                render_ops.push(RenderOp::MoveCursorPositionAbs(col(0) + row(current_row)));
-                render_tui_styled_texts_into(&footer_styled_texts, &mut render_ops);
-
-                current_row += 1;
-                let legend_styled_texts = tui_styled_texts! {
-                    tui_styled_text! {
-                        @style: new_style!(color_fg: {grey_color}),
-                        @text: "Green = Safe to delete (merged) | Yellow = Active PR | White = No PR"
-                    },
-                };
-                render_ops.push(RenderOp::MoveCursorPositionAbs(col(0) + row(current_row)));
-                render_tui_styled_texts_into(&legend_styled_texts, &mut render_ops);
-
-                render_ops
-            });
-
-            pipeline
-        });
+                KeyCode::Down => {
+                    self.view_state = BranchViewModel::move_down(&self.view_state);
+                    self.list_state.select(Some(self.view_state.selected_index));
+                }
+                _ => {}
+            }
+        }
+        false
     }
 }
 
+/// Creates a ListItem for a branch with multi-line content
+fn create_branch_list_item(branch: &BCBranch) -> ListItem<'_> {
+    let color = get_status_color(branch.pr_status);
+    let mut lines = vec![];
+
+    // Branch name line
+    lines.push(Line::from(vec![Span::styled(
+        branch.name.clone(),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    )]));
+
+    // PR info line if available
+    if let (Some(pr_number), Some(pr_title)) = (branch.pr_number, &branch.pr_title) {
+        lines.push(Line::from(vec![Span::styled(
+            format!("    └─ PR #{}: {}", pr_number, pr_title),
+            Style::default().fg(Color::Gray),
+        )]));
+    }
+
+    // Status line
+    lines.push(Line::from(vec![Span::styled(
+        format!("    └─ Status: {}", format_status_for_display(branch.pr_status)),
+        Style::default().fg(color),
+    )]));
+
+    ListItem::new(lines)
+}
+
+/// Renders the application UI
+fn render(frame: &mut Frame, app: &mut App) {
+    let [header_area, list_area, footer_area] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Fill(1),
+        Constraint::Length(2),
+    ])
+    .areas(frame.area());
+
+    // Render header
+    let header = Paragraph::new("Branch Cleaner - Git Branch Manager")
+        .block(Block::bordered())
+        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+    frame.render_widget(header, header_area);
+
+    // Render branch list
+    let items: Vec<ListItem> = app
+        .view_state
+        .branches
+        .iter()
+        .map(create_branch_list_item)
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::bordered().title("Branches"))
+        .highlight_style(
+            Style::default()
+                .bg(Color::Cyan)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    frame.render_stateful_widget(list, list_area, &mut app.list_state);
+
+    // Render footer
+    let footer_lines = vec![
+        Line::from(Span::styled(
+            "Navigation: ↑↓ arrows | Quit: q",
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(Span::styled(
+            "Green = Safe to delete (merged) | Yellow = Active PR | White = No PR",
+            Style::default().fg(Color::Gray),
+        )),
+    ];
+    let footer = Paragraph::new(footer_lines);
+    frame.render_widget(footer, footer_area);
+}
+
 /// Entry point to run the TUI application
-pub async fn run_branch_tui() -> CommonResult<()> {
-    // Initialize app state with fake branches
-    let app_state = AppState {
-        view_state: ViewState::new(create_fake_branches()),
-    };
+pub fn run_branch_tui() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize terminal
+    let mut terminal = ratatui::init();
+    let mut app = App::new(create_fake_branches());
 
-    // Create app instance
-    let app = Box::new(BranchCleanerApp::default());
+    // Main event loop
+    loop {
+        terminal.draw(|frame| render(frame, &mut app))?;
 
-    // Exit keys
-    let exit_keys = &[InputEvent::Keyboard(key_press! { @char 'q' })];
+        if event::poll(Duration::from_millis(100))? {
+            if app.handle_event(event::read()?) {
+                break;
+            }
+        }
+    }
 
-    // Run r3bl_tui main loop
-    let _unused: (GlobalData<_, _>, InputDevice, OutputDevice) =
-        TerminalWindow::main_event_loop(app, exit_keys, app_state)?.await?;
-
-    ok!()
+    // Restore terminal state
+    ratatui::restore();
+    Ok(())
 }
 
 #[cfg(test)]

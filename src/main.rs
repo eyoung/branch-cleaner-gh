@@ -5,10 +5,9 @@ use git2::Repository;
 
 mod tui;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Run the TUI application
-    tui::run_branch_tui().await?;
+    tui::run_branch_tui()?;
     Ok(())
 }
 
