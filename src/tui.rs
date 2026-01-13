@@ -22,22 +22,57 @@ pub struct ViewState {
 
 impl ViewState {
     /// Create a new ViewState with the given branches
+    /// By default, selects all merged branches (safe to delete)
     pub fn new(branches: Vec<BCBranch>) -> Self {
+        let selected_branches = branches
+            .iter()
+            .filter(|b| b.pr_status == PrStatus::MERGED)
+            .map(|b| b.name.clone())
+            .collect();
+
         Self {
             branches,
             selected_index: 0,
-            selected_branches: Vec::new(),
+            selected_branches,
         }
     }
 }
 
-/// BranchViewModel provides pure functions for managing branch view logic
-/// All functions are stateless and transform ViewState immutably
-pub struct BranchViewModel;
+/// BranchViewModel handles business logic and data operations
+/// Kept separate from AppState for testability and clean architecture
+#[derive(Debug, Clone)]
+pub struct BranchViewModel<T: BranchStore> {
+    store: T,
+}
 
-impl BranchViewModel {
+impl<T: BranchStore> BranchViewModel<T> {
+    /// Creates a new ViewModel with dependency-injected store
+    pub fn new(store: T) -> Self {
+        Self { store }
+    }
+
+    /// Loads branches from the store and returns ViewState
+    pub fn load_initial_state(&self) -> ViewState {
+        ViewState::new(self.store.list_branches())
+    }
+
+    /// Moves selection up (mutates state in place - r3bl pattern)
+    pub fn move_up(&self, state: &mut ViewState) {
+        if state.selected_index > 0 {
+            state.selected_index -= 1;
+        }
+    }
+
+    /// Moves selection down (mutates state in place - r3bl pattern)
+    pub fn move_down(&self, state: &mut ViewState) {
+        let max_index = state.branches.len().saturating_sub(1);
+        if state.selected_index < max_index {
+            state.selected_index += 1;
+        }
+    }
+
     /// Returns branches that are safe to delete (merged PRs)
-    pub fn safe_to_delete_branches(state: &ViewState) -> Vec<&BCBranch> {
+    pub fn safe_to_delete_branches<'a>(&self, state: &'a ViewState) -> Vec<&'a BCBranch> {
         state
             .branches
             .iter()
@@ -45,40 +80,44 @@ impl BranchViewModel {
             .collect()
     }
 
-    /// Returns a new ViewState with the selection moved up
-    pub fn move_up(state: &ViewState) -> ViewState {
-        let mut new_state = state.clone();
-        if new_state.selected_index > 0 {
-            new_state.selected_index -= 1;
+    /// Toggles selection of the current branch (add if not selected, remove if selected)
+    pub fn toggle_selection(&self, state: &mut ViewState) {
+        if state.selected_index >= state.branches.len() {
+            return; // Safety: invalid index
         }
-        new_state
+
+        let current_branch_name = &state.branches[state.selected_index].name;
+
+        if let Some(pos) = state.selected_branches.iter().position(|name| name == current_branch_name) {
+            // Already selected - remove it
+            state.selected_branches.remove(pos);
+        } else {
+            // Not selected - add it
+            state.selected_branches.push(current_branch_name.clone());
+        }
     }
 
-    /// Returns a new ViewState with the selection moved down
-    pub fn move_down(state: &ViewState) -> ViewState {
-        let mut new_state = state.clone();
-        let max_index = new_state.branches.len().saturating_sub(1);
-        if new_state.selected_index < max_index {
-            new_state.selected_index += 1;
-        }
-        new_state
-    }
+    /// Deletes selected branches from the store and updates the state
+    pub fn delete_selected_branches(&mut self, state: &mut ViewState) {
+        // 1. Delete branches from the store
+        self.store.delete_branches(&state.selected_branches);
 
-    /// Toggles selection of the current branch for deletion
-    pub fn toggle_selection(state: &ViewState) -> ViewState {
-        let mut new_state = state.clone();
-        if let Some(branch) = new_state.branches.get(new_state.selected_index) {
-            let branch_name = branch.name.clone();
-            if new_state.selected_branches.contains(&branch_name) {
-                new_state.selected_branches.retain(|n| n != &branch_name);
-            } else {
-                new_state.selected_branches.push(branch_name);
-            }
-        }
-        new_state
+        // 2. Get updated branches from store
+        let new_branches = self.store.list_branches();
+
+        // 3. Select all merged branches in the new list (default selection)
+        let new_selected = new_branches
+            .iter()
+            .filter(|b| b.pr_status == PrStatus::MERGED)
+            .map(|b| b.name.clone())
+            .collect();
+
+        // 4. Update state with new branches and selection
+        state.branches = new_branches;
+        state.selected_branches = new_selected;
+        state.selected_index = 0; // Reset to beginning after deletion
     }
 }
-
 
 /// Maps PR status to display colors
 fn get_status_color(status: PrStatus) -> Color {
@@ -102,19 +141,20 @@ fn format_status_for_display(status: PrStatus) -> &'static str {
 struct App<T: BranchStore> {
     view_state: ViewState,
     list_state: ListState,
-    store: T,
+    view_model: BranchViewModel<T>,
 }
 
 impl<T: BranchStore> App<T> {
     fn new(store: T) -> Self {
-        let branches = store.list_branches();
+        let view_model = BranchViewModel::new(store);
+        let view_state = view_model.load_initial_state();
         let mut list_state = ListState::default();
         list_state.select(Some(0));
 
         Self {
-            view_state: ViewState::new(branches),
+            view_state,
             list_state,
-            store,
+            view_model,
         }
     }
 
@@ -127,28 +167,21 @@ impl<T: BranchStore> App<T> {
             match key.code {
                 KeyCode::Char('q') => return true,
                 KeyCode::Up => {
-                    self.view_state = BranchViewModel::move_up(&self.view_state);
+                    self.view_model.move_up(&mut self.view_state);
                     self.list_state.select(Some(self.view_state.selected_index));
                 }
                 KeyCode::Down => {
-                    self.view_state = BranchViewModel::move_down(&self.view_state);
+                    self.view_model.move_down(&mut self.view_state);
                     self.list_state.select(Some(self.view_state.selected_index));
                 }
                 KeyCode::Char(' ') => {
                     // Toggle selection
-                    self.view_state = BranchViewModel::toggle_selection(&self.view_state);
+                    self.view_model.toggle_selection(&mut self.view_state);
                 }
                 KeyCode::Char('d') => {
                     // Delete selected branches
                     if !self.view_state.selected_branches.is_empty() {
-                        self.store.delete_branches(&self.view_state.selected_branches);
-                        // Reload branches from store
-                        self.view_state.branches = self.store.list_branches();
-                        self.view_state.selected_branches.clear();
-                        // Adjust selected_index if needed
-                        if self.view_state.selected_index >= self.view_state.branches.len() {
-                            self.view_state.selected_index = self.view_state.branches.len().saturating_sub(1);
-                        }
+                        self.view_model.delete_selected_branches(&mut self.view_state);
                         self.list_state.select(Some(self.view_state.selected_index));
                     }
                 }
@@ -294,6 +327,7 @@ mod tests {
 
     mod view_model {
         use super::*;
+        use crate::InMemoryBranchStore;
 
         #[test]
         fn can_create_view_state_with_branches() {
@@ -303,51 +337,153 @@ mod tests {
             let expected_state = ViewState {
                 branches: branches.clone(),
                 selected_index: 0,
-                selected_branches: Vec::new(),
+                selected_branches: vec!["feature-2".to_owned()], // Only merged branch
             };
 
             assert_eq!(state, expected_state);
         }
 
         #[test]
+        fn viewmodel_loads_branches_from_store() {
+            // Arrange: Create a store with test branches
+            let test_branches = create_test_branches();
+            let store = InMemoryBranchStore::new(test_branches.clone());
+            let view_model = BranchViewModel::new(store);
+
+            // Act: Load initial state from the viewmodel
+            let view_state = view_model.load_initial_state();
+
+            // Assert: ViewState contains branches from the store
+            let expected_state = ViewState {
+                branches: test_branches,
+                selected_index: 0,
+                selected_branches: vec!["feature-2".to_owned()], // Only merged branch
+            };
+
+            assert_eq!(view_state, expected_state);
+        }
+
+        #[test]
         fn returns_only_merged_branches_as_safe_to_delete() {
             let branches = create_test_branches();
             let state = ViewState::new(branches.clone());
+            let store = InMemoryBranchStore::new(branches.clone());
+            let view_model = BranchViewModel::new(store);
 
             let expected = vec![&branches[2]]; // feature-2 is the only merged branch
 
-            assert_eq!(BranchViewModel::safe_to_delete_branches(&state), expected);
+            assert_eq!(view_model.safe_to_delete_branches(&state), expected);
         }
 
         #[test]
         fn move_down_increments_selected_index() {
+            // Arrange
             let branches = create_test_branches();
-            let state = ViewState::new(branches.clone());
+            let mut state = ViewState::new(branches.clone());
+            let store = InMemoryBranchStore::new(branches.clone());
+            let view_model = BranchViewModel::new(store);
 
-            let new_state = BranchViewModel::move_down(&state);
+            // Act: Mutate state in place (r3bl pattern)
+            view_model.move_down(&mut state);
 
+            // Assert: Check entire state
             let expected_state = ViewState {
                 branches: branches.clone(),
                 selected_index: 1,
-                selected_branches: Vec::new(),
+                selected_branches: vec!["feature-2".to_owned()], // Selection unchanged
             };
 
-            assert_eq!(new_state, expected_state);
+            assert_eq!(state, expected_state);
         }
 
         #[test]
         fn move_up_decrements_selected_index() {
+            // Arrange
             let branches = create_test_branches();
-            let state = ViewState::new(branches.clone());
+            let mut state = ViewState::new(branches.clone());
+            let store = InMemoryBranchStore::new(branches.clone());
+            let view_model = BranchViewModel::new(store);
 
-            let state = BranchViewModel::move_down(&state);
-            let state = BranchViewModel::move_down(&state);
-            let state = BranchViewModel::move_up(&state);
+            // Act: Move down twice, then up once (mutating state)
+            view_model.move_down(&mut state);
+            view_model.move_down(&mut state);
+            view_model.move_up(&mut state);
 
+            // Assert: Check entire state
             let expected_state = ViewState {
                 branches: branches.clone(),
                 selected_index: 1,
-                selected_branches: Vec::new(),
+                selected_branches: vec!["feature-2".to_owned()], // Selection unchanged
+            };
+
+            assert_eq!(state, expected_state);
+        }
+
+        #[test]
+        fn toggle_selection_adds_unselected_branch() {
+            // Arrange: State at index 0 (main branch, not pre-selected)
+            let branches = create_test_branches();
+            let mut state = ViewState::new(branches.clone());
+            let store = InMemoryBranchStore::new(branches.clone());
+            let view_model = BranchViewModel::new(store);
+
+            // Act: Toggle selection of current branch (main at index 0)
+            view_model.toggle_selection(&mut state);
+
+            // Assert: main is now selected
+            let expected_state = ViewState {
+                branches: branches.clone(),
+                selected_index: 0,
+                selected_branches: vec!["feature-2".to_owned(), "main".to_owned()],
+            };
+
+            assert_eq!(state, expected_state);
+        }
+
+        #[test]
+        fn toggle_selection_removes_selected_branch() {
+            // Arrange: Move to feature-2 (index 2, already selected)
+            let branches = create_test_branches();
+            let mut state = ViewState::new(branches.clone());
+            let store = InMemoryBranchStore::new(branches.clone());
+            let view_model = BranchViewModel::new(store);
+            view_model.move_down(&mut state);
+            view_model.move_down(&mut state);
+
+            // Act: Toggle selection of current branch (feature-2)
+            view_model.toggle_selection(&mut state);
+
+            // Assert: feature-2 is now unselected
+            let expected_state = ViewState {
+                branches: branches.clone(),
+                selected_index: 2,
+                selected_branches: vec![], // Empty - feature-2 removed
+            };
+
+            assert_eq!(state, expected_state);
+        }
+
+        #[test]
+        fn delete_selected_branches_removes_them_and_reloads_state() {
+            // Arrange: State with feature-2 selected (merged)
+            let branches = create_test_branches();
+            let mut state = ViewState::new(branches.clone());
+            let store = InMemoryBranchStore::new(branches.clone());
+            let mut view_model = BranchViewModel::new(store);
+
+            // Act: Delete selected branches
+            view_model.delete_selected_branches(&mut state);
+
+            // Assert: feature-2 is deleted, state reloaded with remaining branches
+            let expected_branches = vec![
+                BCBranch::new("main", PrStatus::NONE),
+                BCBranch::with_pr("feature-1", PrStatus::OPEN, 1, "Feature 1"),
+            ];
+
+            let expected_state = ViewState {
+                branches: expected_branches,
+                selected_index: 0, // Reset to 0
+                selected_branches: vec![], // No merged branches remain
             };
 
             assert_eq!(state, expected_state);
