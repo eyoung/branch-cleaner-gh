@@ -8,6 +8,7 @@ use ratatui::{
 };
 use std::time::Duration;
 
+use crate::store::BranchStore;
 use crate::{BCBranch, PrStatus};
 
 /// ViewState represents the pure data state of the TUI
@@ -16,6 +17,7 @@ use crate::{BCBranch, PrStatus};
 pub struct ViewState {
     pub branches: Vec<BCBranch>,
     pub selected_index: usize,
+    pub selected_branches: Vec<String>, // Names of branches marked for deletion
 }
 
 impl ViewState {
@@ -24,6 +26,7 @@ impl ViewState {
         Self {
             branches,
             selected_index: 0,
+            selected_branches: Vec::new(),
         }
     }
 }
@@ -60,6 +63,20 @@ impl BranchViewModel {
         }
         new_state
     }
+
+    /// Toggles selection of the current branch for deletion
+    pub fn toggle_selection(state: &ViewState) -> ViewState {
+        let mut new_state = state.clone();
+        if let Some(branch) = new_state.branches.get(new_state.selected_index) {
+            let branch_name = branch.name.clone();
+            if new_state.selected_branches.contains(&branch_name) {
+                new_state.selected_branches.retain(|n| n != &branch_name);
+            } else {
+                new_state.selected_branches.push(branch_name);
+            }
+        }
+        new_state
+    }
 }
 
 
@@ -81,58 +98,23 @@ fn format_status_for_display(status: PrStatus) -> &'static str {
     }
 }
 
-/// Creates fake branch data for testing the TUI
-fn create_fake_branches() -> Vec<BCBranch> {
-    vec![
-        BCBranch::new("main", PrStatus::NONE),
-        BCBranch::with_pr(
-            "feature/add-tui",
-            PrStatus::OPEN,
-            42,
-            "Add TUI interface with iocraft",
-        ),
-        BCBranch::with_pr(
-            "old-feature-branch",
-            PrStatus::MERGED,
-            23,
-            "Old feature implementation",
-        ),
-        BCBranch::new("experimental/refactor", PrStatus::NONE),
-        BCBranch::with_pr(
-            "bugfix/handle-errors",
-            PrStatus::MERGED,
-            15,
-            "Fix error handling in repository",
-        ),
-        BCBranch::with_pr(
-            "feature/github-integration",
-            PrStatus::OPEN,
-            50,
-            "Integrate GitHub API for PR fetching",
-        ),
-        BCBranch::with_pr(
-            "cleanup/remove-old-code",
-            PrStatus::MERGED,
-            31,
-            "Remove deprecated functions and cleanup",
-        ),
-    ]
-}
-
 /// App structure holds the application state
-struct App {
+struct App<T: BranchStore> {
     view_state: ViewState,
     list_state: ListState,
+    store: T,
 }
 
-impl App {
-    fn new(branches: Vec<BCBranch>) -> Self {
+impl<T: BranchStore> App<T> {
+    fn new(store: T) -> Self {
+        let branches = store.list_branches();
         let mut list_state = ListState::default();
         list_state.select(Some(0));
 
         Self {
             view_state: ViewState::new(branches),
             list_state,
+            store,
         }
     }
 
@@ -152,6 +134,24 @@ impl App {
                     self.view_state = BranchViewModel::move_down(&self.view_state);
                     self.list_state.select(Some(self.view_state.selected_index));
                 }
+                KeyCode::Char(' ') => {
+                    // Toggle selection
+                    self.view_state = BranchViewModel::toggle_selection(&self.view_state);
+                }
+                KeyCode::Char('d') => {
+                    // Delete selected branches
+                    if !self.view_state.selected_branches.is_empty() {
+                        self.store.delete_branches(&self.view_state.selected_branches);
+                        // Reload branches from store
+                        self.view_state.branches = self.store.list_branches();
+                        self.view_state.selected_branches.clear();
+                        // Adjust selected_index if needed
+                        if self.view_state.selected_index >= self.view_state.branches.len() {
+                            self.view_state.selected_index = self.view_state.branches.len().saturating_sub(1);
+                        }
+                        self.list_state.select(Some(self.view_state.selected_index));
+                    }
+                }
                 _ => {}
             }
         }
@@ -160,15 +160,22 @@ impl App {
 }
 
 /// Creates a ListItem for a branch with multi-line content
-fn create_branch_list_item(branch: &BCBranch) -> ListItem<'_> {
+fn create_branch_list_item(branch: &BCBranch, is_selected_for_deletion: bool) -> ListItem<'_> {
     let color = get_status_color(branch.pr_status);
     let mut lines = vec![];
 
-    // Branch name line
-    lines.push(Line::from(vec![Span::styled(
-        branch.name.clone(),
-        Style::default().fg(color).add_modifier(Modifier::BOLD),
-    )]));
+    // Branch name line with selection checkbox
+    let checkbox = if is_selected_for_deletion { "[x] " } else { "[ ] " };
+    lines.push(Line::from(vec![
+        Span::styled(
+            checkbox,
+            Style::default().fg(if is_selected_for_deletion { Color::Red } else { Color::Gray }),
+        ),
+        Span::styled(
+            branch.name.clone(),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+    ]));
 
     // PR info line if available
     if let (Some(pr_number), Some(pr_title)) = (branch.pr_number, &branch.pr_title) {
@@ -188,11 +195,11 @@ fn create_branch_list_item(branch: &BCBranch) -> ListItem<'_> {
 }
 
 /// Renders the application UI
-fn render(frame: &mut Frame, app: &mut App) {
+fn render<T: BranchStore>(frame: &mut Frame, app: &mut App<T>) {
     let [header_area, list_area, footer_area] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Fill(1),
-        Constraint::Length(2),
+        Constraint::Length(3),
     ])
     .areas(frame.area());
 
@@ -207,7 +214,10 @@ fn render(frame: &mut Frame, app: &mut App) {
         .view_state
         .branches
         .iter()
-        .map(create_branch_list_item)
+        .map(|b| {
+            let is_selected = app.view_state.selected_branches.contains(&b.name);
+            create_branch_list_item(b, is_selected)
+        })
         .collect();
 
     let list = List::new(items)
@@ -223,10 +233,21 @@ fn render(frame: &mut Frame, app: &mut App) {
     frame.render_stateful_widget(list, list_area, &mut app.list_state);
 
     // Render footer
+    let selected_count = app.view_state.selected_branches.len();
+    let delete_msg = if selected_count > 0 {
+        format!("Selected: {} | Press 'd' to delete", selected_count)
+    } else {
+        "No branches selected".to_string()
+    };
+
     let footer_lines = vec![
         Line::from(Span::styled(
-            "Navigation: ↑↓ arrows | Quit: q",
+            "Navigation: ↑↓ arrows | Space: select | d: delete | q: quit",
             Style::default().fg(Color::Gray),
+        )),
+        Line::from(Span::styled(
+            delete_msg,
+            Style::default().fg(if selected_count > 0 { Color::Yellow } else { Color::Gray }),
         )),
         Line::from(Span::styled(
             "Green = Safe to delete (merged) | Yellow = Active PR | White = No PR",
@@ -238,10 +259,10 @@ fn render(frame: &mut Frame, app: &mut App) {
 }
 
 /// Entry point to run the TUI application
-pub fn run_branch_tui() -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_branch_tui<T: BranchStore>(store: T) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize terminal
     let mut terminal = ratatui::init();
-    let mut app = App::new(create_fake_branches());
+    let mut app = App::new(store);
 
     // Main event loop
     loop {
@@ -282,6 +303,7 @@ mod tests {
             let expected_state = ViewState {
                 branches: branches.clone(),
                 selected_index: 0,
+                selected_branches: Vec::new(),
             };
 
             assert_eq!(state, expected_state);
@@ -307,6 +329,7 @@ mod tests {
             let expected_state = ViewState {
                 branches: branches.clone(),
                 selected_index: 1,
+                selected_branches: Vec::new(),
             };
 
             assert_eq!(new_state, expected_state);
@@ -324,6 +347,7 @@ mod tests {
             let expected_state = ViewState {
                 branches: branches.clone(),
                 selected_index: 1,
+                selected_branches: Vec::new(),
             };
 
             assert_eq!(state, expected_state);
