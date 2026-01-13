@@ -5,9 +5,17 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = ["github-api"]
+github-api = ["dep:octocrab", "dep:git-url-parse", "dep:thiserror", "dep:anyhow"]
+in-memory = []
+
 [dependencies]
 crossterm = "0.28"
 git2 = "0.20.3"
-r3bl_tui = "0.7"
-r3bl_rs_utils_core = "0.9"
+ratatui = "0.29"
 tokio = { version = "1", features = ["full"] }
+octocrab = { version = "0.40", optional = true }
+git-url-parse = { version = "0.4", optional = true }
+thiserror = { version = "1.0", optional = true }
+anyhow = { version = "1.0", optional = true }
