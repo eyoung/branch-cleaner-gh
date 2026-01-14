@@ -83,8 +83,6 @@ cargo test
 # Build with in-memory mock data (no GitHub API)
 cargo build --features in-memory --no-default-features
 
-# Run integration tests (requires GITHUB_TOKEN)
-cargo test -- --ignored
 ```
 
 ## License
