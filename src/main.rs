@@ -8,6 +8,7 @@ mod git;
 mod github;
 mod store;
 mod tui;
+mod view_model;
 
 #[cfg(feature = "in-memory")]
 use store::{BranchStore, InMemoryBranchStore};
