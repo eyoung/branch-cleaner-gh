@@ -10,7 +10,7 @@ mod store;
 mod tui;
 
 #[cfg(feature = "in-memory")]
-use store::InMemoryBranchStore;
+use store::{BranchStore, InMemoryBranchStore};
 
 #[cfg(feature = "github-api")]
 use store::GitHubBranchStore;
@@ -21,17 +21,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         // Use real GitHub API
         let store = GitHubBranchStore::new(".")?;
-        store.load().await?;
-        tui::run_branch_tui(store)?;
+        // load() returns immediately with LOADING status and spawns async task
+        let (initial_branches, update_rx) = store.load()?;
+        tui::run_branch_tui(store, initial_branches, update_rx)?;
     }
-    
+
     #[cfg(feature = "in-memory")]
     {
-        // Use in-memory store for testing
+        // Use in-memory store for testing (no async loading needed)
         let store = InMemoryBranchStore::default();
-        tui::run_branch_tui(store)?;
+        let branches = store.list_branches();
+        // Create a dummy channel that never sends (in-memory has no async loading)
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tui::run_branch_tui(store, branches, rx)?;
     }
-    
+
     Ok(())
 }
 
@@ -41,6 +45,7 @@ pub enum PrStatus {
     OPEN,
     MERGED,
     NONE,
+    LOADING,
 }
 
 impl PrStatus {
@@ -49,6 +54,7 @@ impl PrStatus {
             PrStatus::OPEN => "open",
             PrStatus::MERGED => "merged",
             PrStatus::NONE => "No PR",
+            PrStatus::LOADING => "Loading",
         }
         .to_owned()
     }

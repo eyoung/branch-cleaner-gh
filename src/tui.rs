@@ -7,6 +7,7 @@ use ratatui::{
     Frame,
 };
 use std::time::Duration;
+use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::store::BranchStore;
 use crate::{BCBranch, PrStatus};
@@ -119,21 +120,35 @@ impl<T: BranchStore> BranchViewModel<T> {
     }
 }
 
-/// Maps PR status to display colors
-fn get_status_color(status: PrStatus) -> Color {
+/// Maps PR status to display colors (with animation frame for shimmer)
+fn get_status_color(status: PrStatus, animation_frame: u8) -> Color {
     match status {
         PrStatus::MERGED => Color::Green,   // Safe to delete
         PrStatus::OPEN => Color::Yellow,    // Caution
         PrStatus::NONE => Color::White,     // Default
+        PrStatus::LOADING => {
+            // Shimmer effect: cycle through grays
+            match animation_frame % 4 {
+                0 => Color::Gray,
+                1 => Color::DarkGray,
+                2 => Color::Gray,
+                _ => Color::White,
+            }
+        }
     }
 }
 
-/// Formats PR status for display in the TUI
-fn format_status_for_display(status: PrStatus) -> &'static str {
+/// Formats PR status for display in the TUI (with animation frame for loading dots)
+fn format_status_for_display(status: PrStatus, animation_frame: u8) -> String {
     match status {
-        PrStatus::OPEN => "OPEN",
-        PrStatus::MERGED => "MERGED ✓",
-        PrStatus::NONE => "No PR",
+        PrStatus::OPEN => "OPEN".to_string(),
+        PrStatus::MERGED => "MERGED ✓".to_string(),
+        PrStatus::NONE => "No PR".to_string(),
+        PrStatus::LOADING => {
+            // Animate dots: Loading -> Loading. -> Loading.. -> Loading...
+            let dots = ".".repeat((animation_frame % 4) as usize);
+            format!("LOADING{}", dots)
+        }
     }
 }
 
@@ -142,12 +157,14 @@ struct App<T: BranchStore> {
     view_state: ViewState,
     list_state: ListState,
     view_model: BranchViewModel<T>,
+    animation_frame: u8,
+    update_rx: UnboundedReceiver<Vec<BCBranch>>,
 }
 
 impl<T: BranchStore> App<T> {
-    fn new(store: T) -> Self {
+    fn new(store: T, initial_branches: Vec<BCBranch>, update_rx: UnboundedReceiver<Vec<BCBranch>>) -> Self {
         let view_model = BranchViewModel::new(store);
-        let view_state = view_model.load_initial_state();
+        let view_state = ViewState::new(initial_branches);
         let mut list_state = ListState::default();
         list_state.select(Some(0));
 
@@ -155,6 +172,25 @@ impl<T: BranchStore> App<T> {
             view_state,
             list_state,
             view_model,
+            animation_frame: 0,
+            update_rx,
+        }
+    }
+
+    /// Check for updates from background task and apply them
+    fn check_for_updates(&mut self) {
+        while let Ok(new_branches) = self.update_rx.try_recv() {
+            // Preserve current selection index if possible
+            let current_index = self.view_state.selected_index;
+
+            // Update branches and re-select merged ones by default
+            self.view_state = ViewState::new(new_branches);
+
+            // Restore selection index if still valid
+            if current_index < self.view_state.branches.len() {
+                self.view_state.selected_index = current_index;
+                self.list_state.select(Some(current_index));
+            }
         }
     }
 
@@ -193,8 +229,8 @@ impl<T: BranchStore> App<T> {
 }
 
 /// Creates a ListItem for a branch with multi-line content
-fn create_branch_list_item(branch: &BCBranch, is_selected_for_deletion: bool) -> ListItem<'_> {
-    let color = get_status_color(branch.pr_status);
+fn create_branch_list_item(branch: &BCBranch, is_selected_for_deletion: bool, animation_frame: u8) -> ListItem<'_> {
+    let color = get_status_color(branch.pr_status, animation_frame);
     let mut lines = vec![];
 
     // Branch name line with selection checkbox
@@ -210,17 +246,19 @@ fn create_branch_list_item(branch: &BCBranch, is_selected_for_deletion: bool) ->
         ),
     ]));
 
-    // PR info line if available
-    if let (Some(pr_number), Some(pr_title)) = (branch.pr_number, &branch.pr_title) {
-        lines.push(Line::from(vec![Span::styled(
-            format!("    └─ PR #{}: {}", pr_number, pr_title),
-            Style::default().fg(Color::Gray),
-        )]));
+    // PR info line if available (not shown for LOADING status)
+    if branch.pr_status != PrStatus::LOADING {
+        if let (Some(pr_number), Some(pr_title)) = (branch.pr_number, &branch.pr_title) {
+            lines.push(Line::from(vec![Span::styled(
+                format!("    └─ PR #{}: {}", pr_number, pr_title),
+                Style::default().fg(Color::Gray),
+            )]));
+        }
     }
 
     // Status line
     lines.push(Line::from(vec![Span::styled(
-        format!("    └─ Status: {}", format_status_for_display(branch.pr_status)),
+        format!("    └─ Status: {}", format_status_for_display(branch.pr_status, animation_frame)),
         Style::default().fg(color),
     )]));
 
@@ -249,7 +287,7 @@ fn render<T: BranchStore>(frame: &mut Frame, app: &mut App<T>) {
         .iter()
         .map(|b| {
             let is_selected = app.view_state.selected_branches.contains(&b.name);
-            create_branch_list_item(b, is_selected)
+            create_branch_list_item(b, is_selected, app.animation_frame)
         })
         .collect();
 
@@ -292,13 +330,23 @@ fn render<T: BranchStore>(frame: &mut Frame, app: &mut App<T>) {
 }
 
 /// Entry point to run the TUI application
-pub fn run_branch_tui<T: BranchStore>(store: T) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_branch_tui<T: BranchStore>(
+    store: T,
+    initial_branches: Vec<BCBranch>,
+    update_rx: UnboundedReceiver<Vec<BCBranch>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize terminal
     let mut terminal = ratatui::init();
-    let mut app = App::new(store);
+    let mut app = App::new(store, initial_branches, update_rx);
 
     // Main event loop
     loop {
+        // Check for updates from background loader
+        app.check_for_updates();
+
+        // Increment animation frame for shimmer effect
+        app.animation_frame = app.animation_frame.wrapping_add(1);
+
         terminal.draw(|frame| render(frame, &mut app))?;
 
         if event::poll(Duration::from_millis(100))? {
@@ -327,7 +375,7 @@ mod tests {
 
     mod view_model {
         use super::*;
-        use crate::InMemoryBranchStore;
+        use crate::store::InMemoryBranchStore;
 
         #[test]
         fn can_create_view_state_with_branches() {
