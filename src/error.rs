@@ -3,9 +3,6 @@ use thiserror::Error;
 /// Centralized error types for the branch cleaner application
 #[derive(Error, Debug)]
 pub enum BranchCleanerError {
-    #[error("Git repository not found: {0}")]
-    RepositoryNotFound(String),
-
     #[error("Git error: {0}")]
     GitError(#[from] git2::Error),
 

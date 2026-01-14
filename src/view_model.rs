@@ -61,15 +61,6 @@ impl<T: BranchStore> BranchViewModel<T> {
         }
     }
 
-    /// Returns branches that are safe to delete (merged PRs)
-    pub fn safe_to_delete_branches<'a>(&self, state: &'a ViewState) -> Vec<&'a BCBranch> {
-        state
-            .branches
-            .iter()
-            .filter(|b| b.pr_status == PrStatus::MERGED)
-            .collect()
-    }
-
     /// Toggles selection of the current branch (add if not selected, remove if selected)
     pub fn toggle_selection(&self, state: &mut ViewState) {
         if state.selected_index >= state.branches.len() {
@@ -181,18 +172,6 @@ mod tests {
         };
 
         assert_eq!(view_state, expected_state);
-    }
-
-    #[test]
-    fn returns_only_merged_branches_as_safe_to_delete() {
-        let branches = create_test_branches();
-        let state = ViewState::new(branches.clone());
-        let store = InMemoryBranchStore::new(branches.clone());
-        let view_model = BranchViewModel::new(store);
-
-        let expected = vec![&branches[2]]; // feature-2 is the only merged branch
-
-        assert_eq!(view_model.safe_to_delete_branches(&state), expected);
     }
 
     #[test]

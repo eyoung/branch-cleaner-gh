@@ -86,24 +86,6 @@ impl GitHubClient {
         Ok(None) // No PR found with this branch as source
     }
 
-    /// Enriches branch names with PR information
-    pub async fn enrich_branches(&self, branch_names: Vec<String>) -> Vec<BCBranch> {
-        let mut branches = Vec::new();
-
-        for name in branch_names {
-            let branch = match self.get_pr_for_branch(&name).await {
-                Ok(Some((status, number, title))) => BCBranch::with_pr(&name, status, number, &title),
-                Ok(None) | Err(_) => {
-                    // No PR found or API error - mark as NONE
-                    BCBranch::new(&name, PrStatus::NONE)
-                }
-            };
-            branches.push(branch);
-        }
-
-        branches
-    }
-
     /// Enriches branch names with PR information, streaming each result as it's ready
     pub async fn enrich_branches_streaming(
         &self,
@@ -163,12 +145,13 @@ mod tests {
 
     #[tokio::test]
     #[ignore] // Requires GITHUB_TOKEN and network
-    async fn can_enrich_branches() {
+    async fn can_enrich_branches_streaming() {
         let client = GitHubClient::from_env("octocat".to_string(), "Hello-World".to_string())
             .expect("GITHUB_TOKEN must be set");
 
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let branches = client
-            .enrich_branches(vec!["main".to_string()])
+            .enrich_branches_streaming(vec!["main".to_string()], tx)
             .await;
 
         assert_eq!(branches.len(), 1);

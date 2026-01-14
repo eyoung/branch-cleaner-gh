@@ -82,12 +82,11 @@ struct App<T: BranchStore> {
 impl<T: BranchStore> App<T> {
     fn new(
         store: T,
-        initial_branches: Vec<BCBranch>,
         update_rx: UnboundedReceiver<BCBranch>,
         animation_config: AnimationConfig,
     ) -> Self {
         let view_model = BranchViewModel::new(store);
-        let view_state = ViewState::new(initial_branches);
+        let view_state = view_model.load_initial_state();
         let mut list_state = ListState::default();
         list_state.select(Some(0));
 
@@ -271,13 +270,12 @@ fn render<T: BranchStore>(frame: &mut Frame, app: &mut App<T>) {
 /// Entry point to run the TUI application
 pub fn run_branch_tui<T: BranchStore>(
     store: T,
-    initial_branches: Vec<BCBranch>,
     update_rx: UnboundedReceiver<BCBranch>,
     animation_config: AnimationConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize terminal
     let mut terminal = ratatui::init();
-    let mut app = App::new(store, initial_branches, update_rx, animation_config);
+    let mut app = App::new(store, update_rx, animation_config);
 
     // Main event loop
     loop {

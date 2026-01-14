@@ -22,22 +22,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         // Use real GitHub API
         let store = GitHubBranchStore::new(".")?;
-        // load() returns immediately with LOADING status and spawns async task
-        let (initial_branches, update_rx) = store.load()?;
+        // load() populates cache with LOADING branches and spawns async enrichment task
+        let (_initial_branches, update_rx) = store.load()?;
         // Use slow animation for better readability
         let animation_config = tui::AnimationConfig::slow();
-        tui::run_branch_tui(store, initial_branches, update_rx, animation_config)?;
+        tui::run_branch_tui(store, update_rx, animation_config)?;
     }
 
     #[cfg(feature = "in-memory")]
     {
         // Use in-memory store for testing (no async loading needed)
         let store = InMemoryBranchStore::default();
-        let branches = store.list_branches();
         // Create a dummy channel that never sends (in-memory has no async loading)
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let animation_config = tui::AnimationConfig::slow();
-        tui::run_branch_tui(store, branches, rx, animation_config)?;
+        tui::run_branch_tui(store, rx, animation_config)?;
     }
 
     Ok(())
