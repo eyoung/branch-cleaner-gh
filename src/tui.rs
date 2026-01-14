@@ -12,6 +12,30 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use crate::store::BranchStore;
 use crate::{BCBranch, PrStatus};
 
+/// Configuration for animation timing
+#[derive(Debug, Clone, Copy)]
+pub struct AnimationConfig {
+    /// Milliseconds between each render/poll cycle
+    pub poll_interval_ms: u64,
+}
+
+impl Default for AnimationConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval_ms: 100,
+        }
+    }
+}
+
+impl AnimationConfig {
+    /// Slower animation - better for readability
+    pub fn slow() -> Self {
+        Self {
+            poll_interval_ms: 250,
+        }
+    }
+}
+
 /// ViewState represents the pure data state of the TUI
 /// This is a simple data structure with no business logic
 #[derive(Clone, Debug, PartialEq)]
@@ -118,6 +142,25 @@ impl<T: BranchStore> BranchViewModel<T> {
         state.selected_branches = new_selected;
         state.selected_index = 0; // Reset to beginning after deletion
     }
+
+    /// Updates a single branch in the state (for streaming updates)
+    /// Finds the branch by name and replaces it with the updated version
+    /// Auto-selects merged branches when they transition from LOADING
+    pub fn update_branch(&self, state: &mut ViewState, updated_branch: BCBranch) {
+        if let Some(pos) = state.branches.iter().position(|b| b.name == updated_branch.name) {
+            let was_loading = state.branches[pos].pr_status == PrStatus::LOADING;
+            let is_now_merged = updated_branch.pr_status == PrStatus::MERGED;
+
+            // Auto-select merged branches when they transition from LOADING
+            if was_loading && is_now_merged {
+                if !state.selected_branches.contains(&updated_branch.name) {
+                    state.selected_branches.push(updated_branch.name.clone());
+                }
+            }
+
+            state.branches[pos] = updated_branch;
+        }
+    }
 }
 
 /// Maps PR status to display colors (with animation frame for shimmer)
@@ -158,11 +201,17 @@ struct App<T: BranchStore> {
     list_state: ListState,
     view_model: BranchViewModel<T>,
     animation_frame: u8,
-    update_rx: UnboundedReceiver<Vec<BCBranch>>,
+    animation_config: AnimationConfig,
+    update_rx: UnboundedReceiver<BCBranch>,
 }
 
 impl<T: BranchStore> App<T> {
-    fn new(store: T, initial_branches: Vec<BCBranch>, update_rx: UnboundedReceiver<Vec<BCBranch>>) -> Self {
+    fn new(
+        store: T,
+        initial_branches: Vec<BCBranch>,
+        update_rx: UnboundedReceiver<BCBranch>,
+        animation_config: AnimationConfig,
+    ) -> Self {
         let view_model = BranchViewModel::new(store);
         let view_state = ViewState::new(initial_branches);
         let mut list_state = ListState::default();
@@ -173,24 +222,15 @@ impl<T: BranchStore> App<T> {
             list_state,
             view_model,
             animation_frame: 0,
+            animation_config,
             update_rx,
         }
     }
 
-    /// Check for updates from background task and apply them
+    /// Check for updates from background task and apply them (streaming - one branch at a time)
     fn check_for_updates(&mut self) {
-        while let Ok(new_branches) = self.update_rx.try_recv() {
-            // Preserve current selection index if possible
-            let current_index = self.view_state.selected_index;
-
-            // Update branches and re-select merged ones by default
-            self.view_state = ViewState::new(new_branches);
-
-            // Restore selection index if still valid
-            if current_index < self.view_state.branches.len() {
-                self.view_state.selected_index = current_index;
-                self.list_state.select(Some(current_index));
-            }
+        while let Ok(updated_branch) = self.update_rx.try_recv() {
+            self.view_model.update_branch(&mut self.view_state, updated_branch);
         }
     }
 
@@ -333,11 +373,12 @@ fn render<T: BranchStore>(frame: &mut Frame, app: &mut App<T>) {
 pub fn run_branch_tui<T: BranchStore>(
     store: T,
     initial_branches: Vec<BCBranch>,
-    update_rx: UnboundedReceiver<Vec<BCBranch>>,
+    update_rx: UnboundedReceiver<BCBranch>,
+    animation_config: AnimationConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize terminal
     let mut terminal = ratatui::init();
-    let mut app = App::new(store, initial_branches, update_rx);
+    let mut app = App::new(store, initial_branches, update_rx, animation_config);
 
     // Main event loop
     loop {
@@ -349,7 +390,7 @@ pub fn run_branch_tui<T: BranchStore>(
 
         terminal.draw(|frame| render(frame, &mut app))?;
 
-        if event::poll(Duration::from_millis(100))? {
+        if event::poll(Duration::from_millis(app.animation_config.poll_interval_ms))? {
             if app.handle_event(event::read()?) {
                 break;
             }
@@ -535,6 +576,83 @@ mod tests {
             };
 
             assert_eq!(state, expected_state);
+        }
+
+        #[test]
+        fn update_branch_replaces_loading_branch_with_enriched_data() {
+            // Arrange: State with branches in LOADING status
+            let loading_branches = vec![
+                BCBranch::new("main", PrStatus::LOADING),
+                BCBranch::new("feature-1", PrStatus::LOADING),
+            ];
+            let mut state = ViewState::new(loading_branches.clone());
+            let store = InMemoryBranchStore::new(loading_branches);
+            let view_model = BranchViewModel::new(store);
+
+            // Act: Update feature-1 with enriched data
+            let enriched = BCBranch::with_pr("feature-1", PrStatus::OPEN, 42, "My Feature");
+            view_model.update_branch(&mut state, enriched.clone());
+
+            // Assert: feature-1 is updated, main still loading
+            assert_eq!(state.branches[0].pr_status, PrStatus::LOADING);
+            assert_eq!(state.branches[1], enriched);
+        }
+
+        #[test]
+        fn update_branch_auto_selects_merged_branches() {
+            // Arrange: State with branches in LOADING status (no auto-selection yet)
+            let loading_branches = vec![
+                BCBranch::new("main", PrStatus::LOADING),
+                BCBranch::new("feature-merged", PrStatus::LOADING),
+            ];
+            let mut state = ViewState::new(loading_branches.clone());
+            // LOADING branches are not auto-selected
+            assert!(state.selected_branches.is_empty());
+
+            let store = InMemoryBranchStore::new(loading_branches);
+            let view_model = BranchViewModel::new(store);
+
+            // Act: Update feature-merged to MERGED status
+            let merged = BCBranch::with_pr("feature-merged", PrStatus::MERGED, 10, "Merged PR");
+            view_model.update_branch(&mut state, merged);
+
+            // Assert: feature-merged is now auto-selected
+            assert_eq!(state.selected_branches, vec!["feature-merged".to_owned()]);
+        }
+
+        #[test]
+        fn update_branch_does_not_select_non_merged_branches() {
+            // Arrange: State with branches in LOADING status
+            let loading_branches = vec![
+                BCBranch::new("feature-open", PrStatus::LOADING),
+            ];
+            let mut state = ViewState::new(loading_branches.clone());
+            let store = InMemoryBranchStore::new(loading_branches);
+            let view_model = BranchViewModel::new(store);
+
+            // Act: Update to OPEN status
+            let open = BCBranch::with_pr("feature-open", PrStatus::OPEN, 5, "Open PR");
+            view_model.update_branch(&mut state, open);
+
+            // Assert: Not selected (only MERGED branches are auto-selected)
+            assert!(state.selected_branches.is_empty());
+        }
+
+        #[test]
+        fn update_branch_ignores_unknown_branches() {
+            // Arrange: State with known branches
+            let branches = vec![BCBranch::new("main", PrStatus::LOADING)];
+            let mut state = ViewState::new(branches.clone());
+            let store = InMemoryBranchStore::new(branches);
+            let view_model = BranchViewModel::new(store);
+
+            // Act: Try to update a branch that doesn't exist
+            let unknown = BCBranch::new("unknown-branch", PrStatus::MERGED);
+            view_model.update_branch(&mut state, unknown);
+
+            // Assert: State unchanged
+            assert_eq!(state.branches.len(), 1);
+            assert_eq!(state.branches[0].name, "main");
         }
     }
 }

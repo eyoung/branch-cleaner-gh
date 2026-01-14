@@ -128,8 +128,8 @@ impl GitHubBranchStore {
     }
 
     /// Loads branches from git and starts async PR enrichment
-    /// Returns immediately with branches in LOADING state + a receiver for updates
-    pub fn load(&self) -> Result<(Vec<BCBranch>, UnboundedReceiver<Vec<BCBranch>>)> {
+    /// Returns immediately with branches in LOADING state + a receiver for streaming updates
+    pub fn load(&self) -> Result<(Vec<BCBranch>, UnboundedReceiver<BCBranch>)> {
         // Get local branches from git (fast, no API calls)
         let branch_names = self.git.list_local_branches()?;
 
@@ -142,22 +142,19 @@ impl GitHubBranchStore {
         // Update cache with loading state
         *self.cache.lock().unwrap() = Some(initial_branches.clone());
 
-        // Create channel for async updates
+        // Create channel for streaming updates (one branch at a time)
         let (tx, rx) = mpsc::unbounded_channel();
 
         // Clone what we need for the spawned task
         let github = self.github.clone();
         let cache = Arc::clone(&self.cache);
 
-        // Spawn async task to fetch PR data
+        // Spawn async task to fetch PR data - streams each branch as it's enriched
         tokio::spawn(async move {
-            let enriched = github.enrich_branches(branch_names).await;
+            let enriched = github.enrich_branches_streaming(branch_names, tx).await;
 
-            // Update cache
-            *cache.lock().unwrap() = Some(enriched.clone());
-
-            // Send to TUI (ignore error if receiver dropped)
-            let _ = tx.send(enriched);
+            // Update cache with final state
+            *cache.lock().unwrap() = Some(enriched);
         });
 
         Ok((initial_branches, rx))

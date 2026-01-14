@@ -103,6 +103,32 @@ impl GitHubClient {
 
         branches
     }
+
+    /// Enriches branch names with PR information, streaming each result as it's ready
+    pub async fn enrich_branches_streaming(
+        &self,
+        branch_names: Vec<String>,
+        tx: tokio::sync::mpsc::UnboundedSender<BCBranch>,
+    ) -> Vec<BCBranch> {
+        let mut branches = Vec::new();
+
+        for name in branch_names {
+            let branch = match self.get_pr_for_branch(&name).await {
+                Ok(Some((status, number, title))) => BCBranch::with_pr(&name, status, number, &title),
+                Ok(None) | Err(_) => {
+                    // No PR found or API error - mark as NONE
+                    BCBranch::new(&name, PrStatus::NONE)
+                }
+            };
+
+            // Send immediately to TUI (ignore error if receiver dropped)
+            let _ = tx.send(branch.clone());
+
+            branches.push(branch);
+        }
+
+        branches
+    }
 }
 
 #[cfg(test)]
