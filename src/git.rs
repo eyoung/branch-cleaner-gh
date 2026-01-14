@@ -24,6 +24,9 @@ impl Clone for GitRepository {
 unsafe impl Sync for GitRepository {}
 unsafe impl Send for GitRepository {}
 
+/// Branch names that should never be deleted
+const PROTECTED_BRANCHES: &[&str] = &["main", "master", "develop", "development"];
+
 impl GitRepository {
     /// Opens repository at the given path (or discovers from current dir)
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -32,8 +35,24 @@ impl GitRepository {
         Ok(Self { repo, path })
     }
 
-    /// Lists all local branch names
+    /// Gets the name of the currently checked out branch (HEAD)
+    pub fn current_branch(&self) -> Result<Option<String>> {
+        let head = match self.repo.head() {
+            Ok(head) => head,
+            Err(_) => return Ok(None), // Detached HEAD or no commits
+        };
+
+        if head.is_branch() {
+            Ok(head.shorthand().map(|s| s.to_owned()))
+        } else {
+            Ok(None) // Detached HEAD
+        }
+    }
+
+    /// Lists all local branch names, excluding protected branches and HEAD
     pub fn list_local_branches(&self) -> Result<Vec<String>> {
+        let current = self.current_branch()?;
+
         let branches = self
             .repo
             .branches(Some(BranchType::Local))?
@@ -41,6 +60,12 @@ impl GitRepository {
                 b.ok().and_then(|(branch, _)| {
                     branch.name().ok()?.map(|s| s.to_owned())
                 })
+            })
+            .filter(|name| {
+                // Exclude protected branches
+                !PROTECTED_BRANCHES.contains(&name.as_str())
+                    // Exclude current HEAD branch
+                    && current.as_ref() != Some(name)
             })
             .collect();
         Ok(branches)

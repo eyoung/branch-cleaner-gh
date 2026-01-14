@@ -5,6 +5,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "github-api")]
+use tokio::sync::mpsc::{self, UnboundedReceiver};
+
+#[cfg(feature = "github-api")]
 use crate::error::Result;
 #[cfg(feature = "github-api")]
 use crate::git::GitRepository;
@@ -124,21 +127,38 @@ impl GitHubBranchStore {
         })
     }
 
-    /// Loads branches from git and enriches them with GitHub PR data (async)
-    /// Call this immediately after `new()` to pre-populate the cache
-    pub async fn load(&self) -> Result<()> {
-        // Get local branches
+    /// Loads branches from git and starts async PR enrichment
+    /// Returns immediately with branches in LOADING state + a receiver for streaming updates
+    pub fn load(&self) -> Result<(Vec<BCBranch>, UnboundedReceiver<BCBranch>)> {
+        // Get local branches from git (fast, no API calls)
         let branch_names = self.git.list_local_branches()?;
 
-        // Enrich with GitHub data (async)
-        let branches = self.github.enrich_branches(branch_names).await;
+        // Create initial branches with LOADING status
+        let initial_branches: Vec<BCBranch> = branch_names
+            .iter()
+            .map(|name| BCBranch::new(name, PrStatus::LOADING))
+            .collect();
 
-        // Update cache
-        *self.cache.lock().unwrap() = Some(branches);
+        // Update cache with loading state
+        *self.cache.lock().unwrap() = Some(initial_branches.clone());
 
-        Ok(())
+        // Create channel for streaming updates (one branch at a time)
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        // Clone what we need for the spawned task
+        let github = self.github.clone();
+        let cache = Arc::clone(&self.cache);
+
+        // Spawn async task to fetch PR data - streams each branch as it's enriched
+        tokio::spawn(async move {
+            let enriched = github.enrich_branches_streaming(branch_names, tx).await;
+
+            // Update cache with final state
+            *cache.lock().unwrap() = Some(enriched);
+        });
+
+        Ok((initial_branches, rx))
     }
-
 }
 
 #[cfg(feature = "github-api")]
