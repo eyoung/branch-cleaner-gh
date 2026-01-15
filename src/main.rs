@@ -47,6 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 pub enum PrStatus {
     OPEN,
     MERGED,
+    CLOSED,
     NONE,
     LOADING,
 }
@@ -56,6 +57,7 @@ impl PrStatus {
         match self {
             PrStatus::OPEN => "open",
             PrStatus::MERGED => "merged",
+            PrStatus::CLOSED => "closed",
             PrStatus::NONE => "No PR",
             PrStatus::LOADING => "Loading",
         }

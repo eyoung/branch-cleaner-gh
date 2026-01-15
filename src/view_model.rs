@@ -362,4 +362,20 @@ mod tests {
         assert_eq!(state.branches.len(), 1);
         assert_eq!(state.branches[0].name, "main");
     }
+
+    #[test]
+    fn closed_branches_are_not_auto_selected() {
+        // Arrange: Branches including one with CLOSED status (PR closed without merging)
+        let branches = vec![
+            BCBranch::new("main", PrStatus::NONE),
+            BCBranch::with_pr("feature-closed", PrStatus::CLOSED, 3, "Closed PR"),
+            BCBranch::with_pr("feature-merged", PrStatus::MERGED, 4, "Merged PR"),
+        ];
+
+        // Act: Create ViewState
+        let state = ViewState::new(branches.clone());
+
+        // Assert: Only MERGED branch is auto-selected, CLOSED is not
+        assert_eq!(state.selected_branches, vec!["feature-merged".to_owned()]);
+    }
 }

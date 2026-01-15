@@ -40,9 +40,10 @@ impl AnimationConfig {
 /// Maps PR status to display colors (with animation frame for shimmer)
 fn get_status_color(status: PrStatus, animation_frame: u8) -> Color {
     match status {
-        PrStatus::MERGED => Color::Green,  // Safe to delete
-        PrStatus::OPEN => Color::Yellow,   // Caution
-        PrStatus::NONE => Color::White,    // Default
+        PrStatus::MERGED => Color::Green,   // Safe to delete
+        PrStatus::OPEN => Color::Yellow,    // Caution - active PR
+        PrStatus::CLOSED => Color::Red,     // Closed without merging
+        PrStatus::NONE => Color::White,     // Default
         PrStatus::LOADING => {
             // Shimmer effect: cycle through grays
             match animation_frame % 4 {
@@ -60,6 +61,7 @@ fn format_status_for_display(status: PrStatus, animation_frame: u8) -> String {
     match status {
         PrStatus::OPEN => "OPEN".to_string(),
         PrStatus::MERGED => "MERGED ✓".to_string(),
+        PrStatus::CLOSED => "CLOSED ✗".to_string(),
         PrStatus::NONE => "No PR".to_string(),
         PrStatus::LOADING => {
             // Animate dots: Loading -> Loading. -> Loading.. -> Loading...
@@ -259,7 +261,7 @@ fn render<T: BranchStore>(frame: &mut Frame, app: &mut App<T>) {
             }),
         )),
         Line::from(Span::styled(
-            "Green = Safe to delete (merged) | Yellow = Active PR | White = No PR",
+            "Green = Merged | Yellow = Open PR | Red = Closed (not merged) | White = No PR",
             Style::default().fg(Color::Gray),
         )),
     ];

@@ -71,6 +71,9 @@ impl GitHubClient {
                                 Some(state) if matches!(state, octocrab::models::IssueState::Open) => {
                                     PrStatus::OPEN
                                 }
+                                Some(state) if matches!(state, octocrab::models::IssueState::Closed) => {
+                                    PrStatus::CLOSED
+                                }
                                 _ => PrStatus::NONE,
                             }
                         };
