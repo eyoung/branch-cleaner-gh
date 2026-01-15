@@ -2,6 +2,9 @@
 
 A terminal UI application for managing local git branches. It displays your branches with their GitHub PR status and allows batch deletion of merged branches.
 
+<img width="602" height="258" alt="image" src="https://github.com/user-attachments/assets/37796713-95eb-4c14-8e58-28aa87735f30" />
+
+
 ## Features
 
 - Lists local git branches with their GitHub PR status (Open, Merged, Closed, No PR)
