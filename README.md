@@ -4,7 +4,7 @@ A terminal UI application for managing local git branches. It displays your bran
 
 ## Features
 
-- Lists local git branches with their GitHub PR status (Open, Merged, No PR)
+- Lists local git branches with their GitHub PR status (Open, Merged, Closed, No PR)
 - Auto-selects merged branches for deletion (safe to delete)
 - Protects important branches (`main`, `master`, `develop`, `development`, and current HEAD)
 - Streaming updates - PR status appears as each branch is checked
@@ -61,6 +61,7 @@ GITHUB_TOKEN=your_token branch-cleaner-gh
 
 - **Green (MERGED)** - PR was merged, safe to delete
 - **Yellow (OPEN)** - PR is still open, use caution
+- **Red (CLOSED)** - PR was closed without merging
 - **White (No PR)** - No associated PR found
 
 ## How It Works
