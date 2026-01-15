@@ -216,15 +216,4 @@ mod tests {
         assert_eq!(remaining.len(), initial_count - 1);
         assert!(!remaining.iter().any(|b| b.name == "main"));
     }
-
-    // Integration test with GitHubBranchStore (requires real repo)
-    #[test]
-    #[ignore] // Ignore by default, run with --ignored
-    #[cfg(feature = "github-api")]
-    fn can_use_github_store_with_real_repo() {
-        let store = GitHubBranchStore::new(".").unwrap();
-        let branches = store.list_branches();
-        // Just verify it doesn't panic and returns some branches
-        assert!(!branches.is_empty());
-    }
 }

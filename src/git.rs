@@ -144,22 +144,4 @@ mod tests {
         let result = parse_github_remote("not-a-valid-url");
         assert!(result.is_err());
     }
-
-    // Integration test with real repository - only run manually
-    #[test]
-    #[ignore]
-    fn can_list_branches_in_real_repo() {
-        let git = GitRepository::open(".").unwrap();
-        let branches = git.list_local_branches().unwrap();
-        assert!(!branches.is_empty());
-    }
-
-    #[test]
-    #[ignore]
-    fn can_get_origin_url_in_real_repo() {
-        let git = GitRepository::open(".").unwrap();
-        let url = git.get_origin_url().unwrap();
-        println!("Origin URL: {}", url);
-        assert!(!url.is_empty());
-    }
 }

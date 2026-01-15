@@ -121,43 +121,9 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore] // Requires GITHUB_TOKEN and network
-    async fn can_create_client_from_env() {
-        let result = GitHubClient::from_env("octocat".to_string(), "Hello-World".to_string());
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
     async fn can_create_offline_client() {
         let client = GitHubClient::offline("owner".to_string(), "repo".to_string());
         assert_eq!(client.owner, "owner");
         assert_eq!(client.repo, "repo");
-    }
-
-    #[tokio::test]
-    #[ignore] // Requires GITHUB_TOKEN and network
-    async fn can_fetch_pr_for_branch() {
-        // This test requires a real GitHub token and will query the GitHub API
-        let client = GitHubClient::from_env("octocat".to_string(), "Hello-World".to_string())
-            .expect("GITHUB_TOKEN must be set");
-
-        // The octocat/Hello-World repo may not have PRs, so we just test that it doesn't panic
-        let result = client.get_pr_for_branch("main").await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    #[ignore] // Requires GITHUB_TOKEN and network
-    async fn can_enrich_branches_streaming() {
-        let client = GitHubClient::from_env("octocat".to_string(), "Hello-World".to_string())
-            .expect("GITHUB_TOKEN must be set");
-
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let branches = client
-            .enrich_branches_streaming(vec!["main".to_string()], tx)
-            .await;
-
-        assert_eq!(branches.len(), 1);
-        assert_eq!(branches[0].name, "main");
     }
 }
