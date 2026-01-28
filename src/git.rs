@@ -100,15 +100,17 @@ impl GitRepository {
 /// Supports both SSH (git@github.com:owner/repo.git) and HTTPS formats
 pub fn parse_github_remote(url: &str) -> Result<(String, String)> {
     use git_url_parse::GitUrl;
+    use git_url_parse::types::provider::GenericProvider;
 
     let parsed = GitUrl::parse(url)
         .map_err(|e| BranchCleanerError::RemoteParseError(e.to_string()))?;
 
-    let owner = parsed
-        .owner
-        .ok_or_else(|| BranchCleanerError::RemoteParseError("No owner in URL".into()))?;
+    let provider: GenericProvider = parsed
+        .provider_info()
+        .map_err(|e| BranchCleanerError::RemoteParseError(e.to_string()))?;
 
-    let name = parsed.name;
+    let owner = provider.owner().to_string();
+    let name = provider.repo().to_string();
 
     Ok((owner, name))
 }
